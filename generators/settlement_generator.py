@@ -7,9 +7,9 @@ from structures.house_builder import HouseBuilder
 
 class SettlementGenerator:
     
-    def __init__(self, editor):
+    def __init__(self, editor, build_area=None):
         self.editor = editor
-        self.build_area = None
+        self.build_area = build_area
         self.terrain_analyzer = None
         self.site_locator = None
         self.house_builder = None
@@ -46,16 +46,27 @@ class SettlementGenerator:
         print("✓ SETTLEMENT GENERATION COMPLETE")
         print("="*50)
         print(f"\nGenerated {len(self.buildings)} buildings")
-        print(f"Build area: {self.build_area.size.x}x{self.build_area.size.z}")
         print("\nCheck Minecraft to see your settlement!")
+    
+    def set_build_area(self, area_tuple):
+        x1, y1, z1, x2, y2, z2 = area_tuple
+
+        from gdpc.vector_tools import Box
+
+        self.build_area = Box(
+            (x1, y1, z1),
+            (x2 - x1, y2 - y1, z2 - z1)
+        )
     
     def _setup(self):
         print("\n[Phase 1] Setup")
+
+        if self.build_area is None:
+            self.build_area = self.editor.getBuildArea()
         
-        self.build_area = self.editor.getBuildArea()
         print(f"  ✓ Build area: {self.build_area.size.x}x{self.build_area.size.z}")
         
-        if self.build_area.size.x < 20 or self.build_area.size.z < 20:
+        if self.build_area.size.x < 20 or self.build_area.size.x < 20:
             raise ValueError("Build area too small! Use at least 50x50")
     
     def _analyze_terrain(self, visualize):
@@ -71,10 +82,13 @@ class SettlementGenerator:
         print("\n[Phase 3] Site Location")
         
         self.site_locator = SiteLocator(self.terrain_analyzer)
-        self.site_locator.find_sites(building_size=(7, 7), max_sites=num_buildings)
+        self.site_locator.find_sites(
+            building_size=(7, 7), 
+            max_sites=num_buildings
+            )
         
         if visualize:
-            self.site_locator.visualize_sites()
+            self.site_locator.visualize_sites(self.editor)
     
     def _generate_buildings(self):
         print("\n[Phase 4] Building Generation")

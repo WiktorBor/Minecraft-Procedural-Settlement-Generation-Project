@@ -67,7 +67,10 @@ class SiteLocator:
             }
             
             sites.append(site)
-            occupied[i:i+width+margin*2, j:j+depth+margin*2] = True
+            occupied[
+                i-margin:i+width+margin,
+                j-margin:j+depth+margin
+            ] = True
         
         self.sites = sites
         print(f"  ✓ Found {len(sites)} sites")

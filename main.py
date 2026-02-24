@@ -1,4 +1,4 @@
-"""Main entry point for settlement generation."""
+"""Main entry point: World analysis and settlement generation."""
 
 import sys
 import argparse
@@ -6,13 +6,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from gdpc import Editor
+from gdpc import Editor, interface
 from generators.settlement_generator import SettlementGenerator
+from world_analysis import WorldAnalyser
+from utils.http_client import GDMCClient
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Generate Minecraft settlements')
-    parser.add_argument('--buildings', type=int, default=3,
+    parser = argparse.ArgumentParser(
+        description='Analyse world and Generate Minecraft settlements')
+    parser.add_argument('--buildings',type=int, default=3,
                        help='Number of buildings to generate (default: 3)')
     parser.add_argument('--visualize', action='store_true',
                        help='Show debug visualizations in Minecraft')
@@ -20,34 +23,61 @@ def main():
     args = parser.parse_args()
     
     print("\n" + "="*60)
-    print("GDMC SETTLEMENT GENERATOR")
+    print("GDMC WORLD ANALYSIS AND SETTLEMENT GENERATOR")
     print("="*60)
     print("\nInitializing...")
+
+    client = GDMCClient()
+
+    if not client.check_connection():
+        print("\n Could not connect to GDMC HTTP Interface.\nIs Minecraft running?")
+        sys.exit(1)
     
+    if not client.check_build_area():
+        print("\n No built area set.\n Use /buildarea set ~ ~ ~ ~ ~ ~ to set a build area.")
+        sys.exit(1)
+    
+    print("\n Connection OK. Starting analysis")
+
+    analyser = WorldAnalyser(client)
+    analyser.fetch_build_area()
+    analyser.fetch_heightmaps()
+    analyser.fetch_surface_blocks()
+    analyser.fetch_biomes()
+    analyser.build_water_mask()
+
+    scores = analyser.analyse()
+
+    x1, y1, z1, x2, y2, z2 = analyser.get_best_location(scores)
+
+    # Teleport player to best location
+    cx = (x1 + x2) // 2
+    cz = (z1 + z2) // 2
+    interface.runCommand(f"tp @p {cx} 70 {cz}")
+
+    print(f"\n Build area: From ({x1}, {y1}, {z1}) to ({x2}, {y2}, {z2})")
+
+    # Generate settlement
+    print("\n Starting settlement generation...")
+
     try:
         editor = Editor(buffering=True)
-        generator = SettlementGenerator(editor)
-        generator.generate(num_buildings=args.buildings, visualize=args.visualize)
-        
-        return 0
+        generator = SettlementGenerator(
+            editor 
+        )  
+        generator.set_build_area((x1, y1, z1, x2, y2, z2))
+       
+        generator.generate(
+            num_buildings=args.buildings, 
+            visualize=args.visualize
+        )
         
     except KeyboardInterrupt:
         print("\n\n⚠ Generation cancelled by user")
         return 1
         
-    except Exception as e:
-        print(f"\n\n✗ Error: {e}")
-        print("\nTroubleshooting:")
-        print("  1. Is Minecraft running?")
-        print("  2. Is GDMC HTTP Interface mod installed?")
-        print("  3. Are you in a world?")
-        print("  4. Is build area set? /buildarea set ~ ~ ~ ~50 ~ ~50")
-        print("\nRun: python tests/test_connection.py")
-        
-        import traceback
-        traceback.print_exc()
-        
-        return 1
+    print("\n Settlement generation complete!")
+    return 0
 
 
 if __name__ == '__main__':
