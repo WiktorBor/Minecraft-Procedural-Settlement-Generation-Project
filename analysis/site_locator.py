@@ -6,13 +6,13 @@ from gdpc import Block
 
 class SiteLocator:
     
-    def __init__(self, terrain_analyzer):
-        self.terrain = terrain_analyzer
-        self.build_area = terrain_analyzer.build_area
+    def __init__(self, world_analyser, settlement_area, editor):
+        self.world = world_analyser
+        self.settlement_area = settlement_area
         self.sites = []
-        self.editor = terrain_analyzer.editor
+        self.editor = editor
     
-    def find_sites(self, building_size=(7, 7), max_sites=5):
+    def find_sites(self, max_sites=5, building_size=(7, 7)):
         """
         Find best building sites.
         
@@ -26,20 +26,55 @@ class SiteLocator:
         print("\n=== SITE LOCATION ===")
         print(f"  Searching for {max_sites} sites ({building_size[0]}x{building_size[1]})...")
         
-        sites = []
-        occupied = np.zeros(self.terrain.buildability_map.shape, dtype=bool)
-        
         width, depth = building_size
         margin = 3
-        
+
+        # Global terrain references
+        global_heightmap = self.world.heightmap
+        global_slope_map = self.world.slope_map
+        global_area = self.world.build_area
+        global_water_mask = self.world.water_mask
+        global_water_distances = self.world.water_distances
+
+        # Convert settlement area to local indices
+        offset_x = self.settlement_area.x_from - global_area.x_from
+        offset_z = self.settlement_area.z_from - global_area.z_from
+
+        area_width = self.settlement_area.width
+        area_depth = self.settlement_area.depth
+
+        occupied = np.zeros((area_width, area_depth), dtype=bool)
         candidates = []
         
-        for i in range(margin, self.terrain.buildability_map.shape[0] - width - margin):
-            for j in range(margin, self.terrain.buildability_map.shape[1] - depth - margin):
-                if occupied[i:i+width+margin*2, j:j+depth+margin*2].any():
+        for i in range(margin, area_width - width - margin):
+            for j in range(margin, area_depth - depth - margin):
+
+                if occupied[i-margin:i+width+margin, j-margin:j+depth+margin].any():
                     continue
                 
-                area_score = self.terrain.buildability_map[i:i+width, j:j+depth].mean()
+                gx = offset_x + i
+                gz = offset_z + j
+
+                if global_water_mask[gx:gx+width, gz:gz+depth].any():
+                    continue
+
+                if global_water_distances[gx:gx+width, gz:gz+depth].min() < 4:
+                    continue   
+
+                area_heights = global_heightmap[gx:gx+width, gz:gz+depth]
+                area_slopes = global_slope_map[gx:gx+width, gz:gz+depth]
+
+                height_range = area_heights.max() - area_heights.min()
+                mean_slope = area_slopes.mean()
+
+                if height_range > 2:
+                    continue
+
+                flatness_score = max(0, 1 - mean_slope / 2)
+                level_score = max(0, 1 -height_range / 3)
+                water_proximity = self.world._compute_water_proximity(gx, gz)
+
+                area_score = flatness_score * 0.5 + level_score * 0.3 + water_proximity * 0.2
                 
                 if area_score > 0.4:
                     candidates.append({
@@ -49,24 +84,39 @@ class SiteLocator:
                     })
         
         candidates.sort(key=lambda c: c['score'], reverse=True)
+
+        sites = []
         
         for candidate in candidates[:max_sites]:
-            i, j = candidate['local_x'], candidate['local_z']
+            if len(sites) >= max_sites:
+                break
+
+            i = candidate['local_x']
+            j = candidate['local_z']
             
-            world_x = self.build_area.offset.x + i
-            world_z = self.build_area.offset.z + j
-            terrain_height = int(self.terrain.heightmap[i, j])
+            if occupied[i-margin:i+width+margin,
+                        j-margin:j+depth+margin].any():
+                continue
+
+            world_x = self.settlement_area.x_from + i
+            world_z = self.settlement_area.z_from + j
+            
+            gx = offset_x + i
+            gz = offset_z + j
+
+            base_height = int(global_heightmap[gx, gz])
             
             site = {
                 'x': world_x,
                 'z': world_z,
-                'height': terrain_height,
+                'height': base_height,
                 'width': width,
                 'depth': depth,
                 'score': candidate['score']
             }
             
             sites.append(site)
+            
             occupied[
                 i-margin:i+width+margin,
                 j-margin:j+depth+margin
@@ -79,7 +129,7 @@ class SiteLocator:
             print(f"    Site {idx}: ({site['x']}, {site['z']}) score={site['score']:.2f}")
         
         return sites
-    
+
     def visualize_sites(self):
         print("\n  Placing site markers...")
         
