@@ -50,11 +50,6 @@ def main():
 
     x1, y1, z1, x2, y2, z2 = analyser.get_best_location(scores)
 
-    # Teleport player to best location
-    cx = (x1 + x2) // 2
-    cz = (z1 + z2) // 2
-    interface.runCommand(f"tp @p {cx} 70 {cz}")
-
     print(f"\n Build area: From ({x1}, {y1}, {z1}) to ({x2}, {y2}, {z2})")
 
     # Generate settlement
