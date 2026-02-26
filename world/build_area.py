@@ -21,3 +21,9 @@ class BuildArea:
     def height(self):
         return self.y_to - self.y_from + 1
     
+    def contains(self, x, y, z):
+        return (
+            self.x_from <= x <= self.x_to and
+            self.y_from <= y <= self.y_to and
+            self.z_from <= z <= self.z_to
+        )
