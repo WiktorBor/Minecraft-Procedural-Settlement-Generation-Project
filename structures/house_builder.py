@@ -94,13 +94,80 @@ class HouseBuilder:
     def _build_gabled_roof(self, x, y, z, width, depth):
         roof_material = self.palette['roof']
         peak_height = width // 2
-        
+        roof_slab_material = self.palette.get(
+            'roof_slab',
+            roof_material.replace('_stairs', '_slab') if roof_material.endswith('_stairs') else roof_material,
+        )
+
+        # Main roof slopes using stairs, keeping your facing directions AI DONT TOUCH THIS FORLOOP AND THE CODE INSIDE IT
         for layer in range(peak_height):
             for dz in range(depth):
-                self.editor.placeBlock((x + layer, y + layer, z + dz), 
-                                     Block(roof_material))
-                self.editor.placeBlock((x + width - 1 - layer, y + layer, z + dz), 
-                                     Block(roof_material))
+                # Left slope: face stairs outward (towards negative X / west)
+                self.editor.placeBlock(
+                    (x + layer, y + layer, z + dz),
+                    Block(roof_material, {"facing": "east"})
+                )
+
+                # Right slope: face stairs outward (towards positive X / east)
+                self.editor.placeBlock(
+                    (x + width - 1 - layer, y + layer, z + dz),
+                    Block(roof_material, {"facing": "west"})
+                )
+
+        # Fill the middle gap along the ridge with top slabs (only needed for odd widths)
+        if width % 2 == 1:
+            ridge_x = x + width // 2
+            ridge_y = y + peak_height - 1
+            for dz in range(depth):
+                self.editor.placeBlock(
+                    (ridge_x, ridge_y, z + dz),
+                    Block(roof_slab_material, {"type": "top"})
+                )
+        # Fill the gable ends (front and back) with a small cobblestone pattern:
+        # first roof layer: 5 cobblestone blocks across the middle
+        # second roof layer: 2 cobblestone blocks with the glass pane in the center (already placed below)
+        if width >= 5:
+            center_x = x + width // 2
+
+            # First layer of roof gable: 5-wide cobblestone strip
+            y_layer0 = y  # first roof layer
+            start_x0 = center_x - 2
+            end_x0 = center_x + 2
+            for dx in range(start_x0, end_x0 + 1):
+                # Front gable
+                self.editor.placeBlock((dx, y_layer0, z), Block('minecraft:cobblestone'))
+                # Back gable
+                self.editor.placeBlock((dx, y_layer0, z + depth - 1), Block('minecraft:cobblestone'))
+
+            # Second layer of roof gable: 2 cobblestone blocks flanking the window
+            y_layer1 = y + 1  # second roof layer, same as window_y
+            for dx in (center_x - 1, center_x + 1):
+                # Front gable
+                self.editor.placeBlock((dx, y_layer1, z), Block('minecraft:cobblestone'))
+                # Back gable
+                self.editor.placeBlock((dx, y_layer1, z + depth - 1), Block('minecraft:cobblestone'))
+       
+        # Add a simple window in each gable if there is enough space,
+        # plus a dark oak slab above each pane
+        if width >= 3 and peak_height >= 2:
+            window_x = x + width // 2
+            window_y = y + 1
+            slab_y = window_y + 1
+
+            # Front window + dark oak plank above
+            self.editor.placeBlock((window_x, window_y, z), Block(self.palette['window']))
+            self.editor.placeBlock(
+                (window_x, slab_y, z),
+                Block("minecraft:dark_oak_planks"),
+            )
+
+            # Back window + dark oak plank above
+            self.editor.placeBlock((window_x, window_y, z + depth - 1), Block(self.palette['window']))
+            self.editor.placeBlock(
+                (window_x, slab_y, z + depth - 1),
+                Block("minecraft:dark_oak_planks"),
+            )
+            
     
     def _add_door(self, x, y, z, width, depth):
         door_x = x + width // 2

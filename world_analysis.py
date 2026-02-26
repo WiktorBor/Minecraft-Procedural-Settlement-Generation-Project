@@ -238,13 +238,22 @@ class WorldAnalyser:
 
     # GET BEST LOCATION
     def get_best_location(self, scores, rect_size=200, stride=10):
+        width = self.build_area.width
+        depth = self.build_area.depth
+
+        # Ensure the rectangle fits inside the build area
+        rect_size = min(rect_size, width, depth)
+        if rect_size <= 0:
+            return None
+
         best_score = -np.inf
         best_rect = None
 
-        for x in range(0, self.build_area.width - rect_size, stride):
-            for z in range(0, self.build_area.depth - rect_size, stride):
+        # Allow using the full area (inclusive upper bound)
+        for x in range(0, width - rect_size + 1, stride):
+            for z in range(0, depth - rect_size + 1, stride):
 
-                area = scores[x:x+rect_size, z:z+rect_size]
+                area = scores[x:x + rect_size, z:z + rect_size]
                 avg_score = np.mean(area)
 
                 if avg_score > best_score:
