@@ -36,18 +36,68 @@ class WorldAnalyser:
         self.compute_slope_map()
     
     # HTTP FETCH FUNCTIONS
-    def _fetch_build_area(self):
-        data = self.client.get("/buildarea")
+    def _fetch_build_area(self, radius: int = 250):
+        """
+        Determine build area around the first player, 
+        fallback to server build area if needed.
+        """
+        try:
+            players = self.client.get("/players", 
+                params={"includeData": "true"})
 
-        self.build_area = BuildArea(
-            x_from = data["xFrom"],
-            y_from = data["yFrom"],
-            z_from = data["zFrom"],
-            x_to = data["xTo"],
-            y_to = data["yTo"],
-            z_to = data["zTo"],
-        )
-    
+            if not players:
+                raise ValueError("No players found")
+            
+            player = players[0]
+            snbt = player.get("data")
+            if not snbt:
+                raise ValueError("Player SNBT data not found")
+
+            pos_start = snbt.find("Pos:[")
+            if pos_start == -1:
+                raise ValueError("Player position not found")
+            
+            pos_end = snbt.find("]", pos_start)
+            pos_str = snbt[pos_start + len("Pos:["):pos_end]
+
+            x, y, z = [float(c.replace("d", "").strip())
+                    for c in pos_str.split(",")]
+
+            y_min = max(-64, int(y) - 20)
+            y_max = min(320, int(y) + 20)
+
+            self.build_area = BuildArea(
+                x_from = int(x - radius),
+                y_from = y_min,
+                z_from = int(z - radius),
+                x_to = int(x + radius),
+                y_to = y_max,
+                z_to = int(z + radius)
+            )
+
+            command = f"/buildarea set {self.build_area.x_from} {self.build_area.y_from} {self.build_area.z_from} {self.build_area.x_to} {self.build_area.y_to} {self.build_area.z_to}"
+
+            self.client.post("/commands", {
+                "commands": [command],
+                "dimension": "minecraft:overworld",
+                "x": self.build_area.x_from,
+                "y": self.build_area.y_from,
+                "z": self.build_area.z_from
+            })
+
+        except Exception as e:
+            print(e)
+            data = self.client.get("/buildarea")
+
+            self.build_area = BuildArea(
+                x_from = data["xFrom"],
+                y_from = data["yFrom"],
+                z_from = data["zFrom"],
+                x_to = data["xTo"],
+                y_to = data["yTo"],
+                z_to = data["zTo"],
+            )
+   
     def _fetch_heightmaps(self):
         params={
             "x": self.build_area.x_from,
@@ -56,11 +106,13 @@ class WorldAnalyser:
             "depth": self.build_area.depth,
             }
         
+                # Fetch surface
         surface = self.client.get("/heightmap", {
             **params,
             "type": "MOTION_BLOCKING"
         })
 
+        # Fetch ground
         ground = self.client.get("/heightmap", {
             **params,
             "type": "MOTION_BLOCKING_NO_PLANTS"
@@ -73,8 +125,12 @@ class WorldAnalyser:
             self.heightmap_surface - self.heightmap_ground)
         self.heightmap = self.heightmap_ground
 
-    def _fetch_surface_blocks(self, depth=20):
-        Chunk = 16
+    def _fetch_surface_blocks(self, depth=20, Chunk = 32):
+        """
+        Fetch top surface blocks for the entire build area.
+        """
+
+        fetched_columns = set()
 
         for x in range(0, self.build_area.width, Chunk):
             for z in range(0, self.build_area.depth, Chunk):
@@ -86,35 +142,46 @@ class WorldAnalyser:
 
                 chunk_heights = self.heightmap[x:x+dx, z:z+dz]
 
+                if chunk_heights.size == 0:
+                    continue
+
                 y_top = int(np.max(chunk_heights))
+                if y_top < 0:
+                    continue
 
                 blocks = self.client.get("/blocks", params={
                     "x": world_x,
                     "z": world_z,
-                    "y": y_top - depth,
+                    "y": max(0, y_top - depth),
                     "dx": dx,
                     "dz": dz,
                     "dy": depth,
-                    "withinBuildArea": "true"
                 })
+
+                if not blocks:
+                    continue
 
                 columns = {}
                 for block in blocks:
                     lx = block["x"] - self.build_area.x_from
                     lz = block["z"] - self.build_area.z_from
-                    key = (lx, lz)
-
-                    columns.setdefault(key, []).append(block)
+                    if 0 <= lx < self.build_area.width and 0 <= lz < self.build_area.depth:
+                        key = (lx, lz)
+                        columns.setdefault(key, []).append(block)
                 
-                for key, column_blocks in columns.items():
+                for (lx, lz), column_blocks in columns.items():
+                    if (lx, lz) in fetched_columns:
+                        continue
+
                     column_blocks.sort(key=lambda b: b["y"], reverse=True)
 
                     for block in column_blocks:
-                        block_id = block["id"]
+                        block_id = block.get("id", "air")
 
                         if not any(k in block_id for k in ("air", "_leaves", "_log",
                         "_wood", "grass", "flower")):
-                            self.surface_blocks[key] = (block["y"], block_id)
+                            self.surface_blocks[(lx, lz)] = (block["y"], block_id)
+                            fetched_columns.add((lx, lz))
                             break
 
     def _fetch_biomes(self):
