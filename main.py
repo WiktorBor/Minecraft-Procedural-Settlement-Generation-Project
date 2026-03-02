@@ -20,6 +20,8 @@ def main():
     parser.add_argument('--visualize', action='store_true',
                        help='Show debug visualizations in Minecraft')
     
+    args = parser.parse_args()
+    
     print("\n" + "="*60)
     print("GDMC WORLD ANALYSIS AND SETTLEMENT GENERATOR")
     print("="*60)
@@ -32,10 +34,12 @@ def main():
         sys.exit(1)
     
     if not client.check_build_area():
-        print("\n No built area set.\n Use /buildarea set ~ ~ ~ ~ ~ ~ to set a build area.")
+        print("\n No build area set. Set it in-game first, e.g.:")
+        print("   /buildarea set ~ ~ ~ ~199 ~ ~199   (200x200 from your position)")
+        print("   Or: /buildarea set x1 y1 z1 x2 y2 z2")
         sys.exit(1)
     
-    print("\n Connection OK. Starting analysis")
+    print("\n Connection OK. Using your current build area.")
 
     # Generate settlement
     print("\n Starting settlement generation...")
@@ -46,8 +50,7 @@ def main():
             editor, client
         )  
 
-        generator.generate(
-            num_buildings=3)
+        generator.generate(num_buildings=args.buildings)
         
     except KeyboardInterrupt:
         print("\n\n⚠ Generation cancelled by user")

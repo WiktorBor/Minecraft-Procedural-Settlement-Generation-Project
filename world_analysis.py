@@ -36,68 +36,21 @@ class WorldAnalyser:
         self.compute_slope_map()
     
     # HTTP FETCH FUNCTIONS
-    def _fetch_build_area(self, radius: int = 250):
+    def _fetch_build_area(self):
         """
-        Determine build area around the first player, 
-        fallback to server build area if needed.
+        Use the build area already set in-game (e.g. via /buildarea set).
+        Does not modify the build area; set it yourself before running.
         """
-        try:
-            players = self.client.get("/players", 
-                params={"includeData": "true"})
+        data = self.client.get("/buildarea")
+        self.build_area = BuildArea(
+            x_from=data["xFrom"],
+            y_from=data["yFrom"],
+            z_from=data["zFrom"],
+            x_to=data["xTo"],
+            y_to=data["yTo"],
+            z_to=data["zTo"],
+        )
 
-            if not players:
-                raise ValueError("No players found")
-            
-            player = players[0]
-            snbt = player.get("data")
-            if not snbt:
-                raise ValueError("Player SNBT data not found")
-
-            pos_start = snbt.find("Pos:[")
-            if pos_start == -1:
-                raise ValueError("Player position not found")
-            
-            pos_end = snbt.find("]", pos_start)
-            pos_str = snbt[pos_start + len("Pos:["):pos_end]
-
-            x, y, z = [float(c.replace("d", "").strip())
-                    for c in pos_str.split(",")]
-
-            y_min = max(-64, int(y) - 20)
-            y_max = min(320, int(y) + 20)
-
-            self.build_area = BuildArea(
-                x_from = int(x - radius),
-                y_from = y_min,
-                z_from = int(z - radius),
-                x_to = int(x + radius),
-                y_to = y_max,
-                z_to = int(z + radius)
-            )
-
-            command = f"/buildarea set {self.build_area.x_from} {self.build_area.y_from} {self.build_area.z_from} {self.build_area.x_to} {self.build_area.y_to} {self.build_area.z_to}"
-
-            self.client.post("/commands", {
-                "commands": [command],
-                "dimension": "minecraft:overworld",
-                "x": self.build_area.x_from,
-                "y": self.build_area.y_from,
-                "z": self.build_area.z_from
-            })
-
-        except Exception as e:
-            print(e)
-            data = self.client.get("/buildarea")
-
-            self.build_area = BuildArea(
-                x_from = data["xFrom"],
-                y_from = data["yFrom"],
-                z_from = data["zFrom"],
-                x_to = data["xTo"],
-                y_to = data["yTo"],
-                z_to = data["zTo"],
-            )
-   
     def _fetch_heightmaps(self):
         params={
             "x": self.build_area.x_from,
@@ -129,13 +82,13 @@ class WorldAnalyser:
         """
         Fetch top surface blocks for the entire build area.
         """
-
+        h_w, h_d = self.heightmap.shape[0], self.heightmap.shape[1]
         fetched_columns = set()
 
-        for x in range(0, self.build_area.width, Chunk):
-            for z in range(0, self.build_area.depth, Chunk):
-                dx = min(Chunk, self.build_area.width - x)
-                dz = min(Chunk, self.build_area.depth - z)
+        for x in range(0, h_w, Chunk):
+            for z in range(0, h_d, Chunk):
+                dx = min(Chunk, h_w - x)
+                dz = min(Chunk, h_d - z)
 
                 world_x = self.build_area.x_from + x
                 world_z = self.build_area.z_from + z
@@ -165,7 +118,7 @@ class WorldAnalyser:
                 for block in blocks:
                     lx = block["x"] - self.build_area.x_from
                     lz = block["z"] - self.build_area.z_from
-                    if 0 <= lx < self.build_area.width and 0 <= lz < self.build_area.depth:
+                    if 0 <= lx < h_w and 0 <= lz < h_d:
                         key = (lx, lz)
                         columns.setdefault(key, []).append(block)
                 
@@ -214,10 +167,11 @@ class WorldAnalyser:
         return min(max(thickness, 0) / 5.0, 1.0)
 
     def _compute_flatness(self, x, z, radius=5):
+        h_w, h_d = self.heightmap.shape[0], self.heightmap.shape[1]
         x_min = max(0, x - radius)
-        x_max = min(self.build_area.width, x + radius + 1)
+        x_max = min(h_w, x + radius + 1)
         z_min = max(0, z - radius)
-        z_max = min(self.build_area.depth, z + radius + 1)
+        z_max = min(h_d, z + radius + 1)
 
         area = self.heightmap[x_min:x_max, z_min:z_max]
 
@@ -227,10 +181,11 @@ class WorldAnalyser:
     def _compute_accessibility(self, x, z):
         center_height = self.heightmap[x, z]
         walkable = 0
+        h_height, h_depth = self.heightmap.shape[0], self.heightmap.shape[1]
 
         for dx, dz in [(-1,0), (1,0),(0,-1),(0,1)]:
             nx, nz = x + dx, z + dz
-            if 0 <= nx < self.build_area.width and 0 <= nz < self.build_area.depth:
+            if 0 <= nx < h_height and 0 <= nz < h_depth:
                 if abs(center_height - self.heightmap[nx, nz]) <= 1:
                     walkable += 1
 
@@ -241,10 +196,11 @@ class WorldAnalyser:
         self.slope_map = np.sqrt(gx**2 + gz**2)
 
     def _build_water_mask(self):
-        self.water_mask = np.zeros((self.build_area.width, self.build_area.depth), dtype=bool)
+        h_w, h_d = self.heightmap.shape[0], self.heightmap.shape[1]
+        self.water_mask = np.zeros((h_w, h_d), dtype=bool)
 
         for (x, z), (_, block_id) in self.surface_blocks.items():
-            if "water" in block_id:
+            if 0 <= x < h_w and 0 <= z < h_d and "water" in block_id:
                 self.water_mask[x][z] = True
         self.water_distances = distance_transform_edt(~self.water_mask)
 
@@ -255,10 +211,11 @@ class WorldAnalyser:
         return self.heightmap[x, z]
 
     def _compute_expansion(self, x, z, radius=5):
+        h_w, h_d = self.heightmap.shape[0], self.heightmap.shape[1]
         x_min = max(0, x - radius)
-        x_max = min(self.build_area.width, x + radius + 1)
+        x_max = min(h_w, x + radius + 1)
         z_min = max(0, z - radius)
-        z_max = min(self.build_area.depth, z + radius + 1)
+        z_max = min(h_d, z + radius + 1)
 
         area = self.heightmap[x_min:x_max, z_min:z_max]
         base_height = self.heightmap[x, z]
@@ -286,11 +243,13 @@ class WorldAnalyser:
             raise ValueError("Build area not fetched. Call fetch_build_area() first.")
         
         """Compute scores for all positions in the build area."""
-        scores = np.zeros((self.build_area.width, self.build_area.depth))
+        # Use heightmap shape so we never index out of bounds (API may return smaller grid)
+        h_width, h_depth = self.heightmap.shape[0], self.heightmap.shape[1]
+        scores = np.zeros((h_width, h_depth))
         max_height = np.max(self.heightmap)
 
-        for x in range(self.build_area.width):
-            for z in range(self.build_area.depth):
+        for x in range(h_width):
+            for z in range(h_depth):
 
                 flatness = self._compute_flatness(x, z)
                 access = self._compute_accessibility(x, z)
@@ -318,8 +277,9 @@ class WorldAnalyser:
     def _get_best_location(self, rect_size, stride):
         """Find the best rectangular area in the build area."""
         self._analyse()
-        width = self.build_area.width
-        depth = self.build_area.depth
+        # Use scores (and heightmap) dimensions to avoid index errors
+        width = self.scores.shape[0]
+        depth = self.scores.shape[1]
 
         # Ensure the rectangle fits inside the build area
         rect_size = min(rect_size, width, depth)
