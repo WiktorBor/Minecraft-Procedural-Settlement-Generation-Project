@@ -1,0 +1,47 @@
+{
+    "modern": {
+        "wall": [
+            "white_concrete",
+            "smooth_quartz"
+        ],
+        "roof": [
+            "black_concrete",
+            "smooth_stone"
+        ],
+        "window": [
+            "glass_pane",
+            "white_stained_glass_pane"
+        ],
+        "door": [
+            "wooden_door",
+            "oak_door"
+        ],
+        "floor": [
+            "white_terracotta",
+            "smooth_red_sandstone"
+        ]
+    },
+    "medieval": {
+        "wall": [
+            "cobblestone",
+            "stone_bricks"
+        ],
+        "roof": [
+            "oak_planks",
+            "spruce_planks"
+        ],
+        "window": [
+            "glass_pane",
+            "gray_stained_glass_pane"
+        ],
+        "door": [
+            "oak_door",
+            "spruce_door"
+        ],
+        "floor": [
+            "oak_planks",
+            "stone_bricks"
+        ]
+    }
+
+}
