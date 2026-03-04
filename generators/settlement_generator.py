@@ -2,6 +2,7 @@
 from analysis.site_locator import SiteLocator
 from world_analysis import WorldAnalyser
 from world.build_area import BuildArea
+from structures.house_builder import HouseBuilder
 
 
 class SettlementGenerator:
@@ -9,13 +10,7 @@ class SettlementGenerator:
     def __init__(self, editor, client):
         self.editor = editor
         self.client = client
-
-        self.world_analyser: WorldAnalyser | None = None
-        self.best_area: BuildArea | None = None
-        self.house_builder = None
         self.buildings = []
-        self.site_locator: SiteLocator | None = None
-        self.sites = []
     
     def generate(self, num_buildings=3):
         """
@@ -30,13 +25,13 @@ class SettlementGenerator:
         print("="*50)
         
         # Phase 1: Analyse world and find best building area
-        self._setup_world_analysis()
+        analysis = self._analyse_world()
         
         # Phase 2: Locate building sites
-        self._locate_sites(num_buildings)
+        sites = self._locate_sites(analysis, num_buildings)
         
         # Phase 3: Generate buildings
-        self._generate_buildings()
+        self._generate_buildings(analysis, sites)
         
         # Phase 4: Finalize
         self._finalize()
@@ -48,31 +43,30 @@ class SettlementGenerator:
         print("\nCheck Minecraft to see your settlement!")
     
     # Private methods for each phase
-    def _setup_world_analysis(self):
+    def _analyse_world(self):
         print("\n[Phase 1] Setup")
 
         # Initialise WorldAnaliser
-        self.world_analyser = WorldAnalyser(self.client)
-        self.world_analyser.prepare()
+        analyser = WorldAnalyser(self.client)
+        results = analyser.prepare()
 
-        self.best_area = self.world_analyser.best_area
-
-        self.site_locator = SiteLocator(self.world_analyser, self.best_area, self.editor)
+        return results
     
-    def _locate_sites(self, num_buildings):
+    def _locate_sites(self,analysis, num_buildings):
         print("\n[Phase 2] Locating building sites")
 
-        self.sites = self.site_locator.find_sites(num_buildings)
-        print(f" {len(self.sites)} building sites determined.")
+        site_locator = SiteLocator(analysis, self.editor)
+        sites = site_locator.find_sites(max_sites=num_buildings)
+        print(f" {len(sites)} building sites determined.")
+        return sites
 
-    def _generate_buildings(self):
+    def _generate_buildings(self, analysis, sites):
         print("\n[Phase 3] Building Generation")
-        from structures.house_builder import HouseBuilder
-        self.house_builder = HouseBuilder(self.editor)
+        house_builder = HouseBuilder(self.editor, analysis)
         
-        for idx, site in enumerate(self.sites, 1):
-            print(f"  Building {idx}/{len(self.sites)} at {site}")
-            building_data = self.house_builder.build(site)
+        for idx, site in enumerate(sites, 1):
+            print(f"  Building {idx}/{len(sites)} at {site}")
+            building_data = house_builder.build(site)
             self.buildings.append(building_data)
         
         print(f"  ✓ Generated {len(self.buildings)} buildings")

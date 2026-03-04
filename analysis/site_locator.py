@@ -3,7 +3,6 @@
 import numpy as np
 from gdpc import Block
 
-
 def _center_distance(ax, az, aw, ad, bx, bz, bw, bd):
     """Rough center-to-center distance between two building footprints."""
     acx = ax + aw / 2
@@ -15,11 +14,15 @@ def _center_distance(ax, az, aw, ad, bx, bz, bw, bd):
 
 class SiteLocator:
     
-    def __init__(self, world_analyser, settlement_area, editor):
-        self.world = world_analyser
-        self.settlement_area = settlement_area
-        self.sites = []
+    def __init__(self, world, editor):
+        """
+        World: WorldAnalysisResult
+        Editor: GDPC Editor
+        """
+        self.world = world
+        self.settlement_area = world.best_area
         self.editor = editor
+        self.sites = []
     
     def find_sites(
         self,
@@ -48,16 +51,16 @@ class SiteLocator:
         """
         print("\n=== SITE LOCATION (village spacing) ===")
         print(f"  Sites: {max_sites}, size: {building_size[0]}x{building_size[1]}, gap: {min_gap}, cluster: {min_building_dist}-{max_building_dist}m")
-        
+        print("Best area:", self.settlement_area)
         width, depth = building_size
         margin = max(3, min_gap)
 
-        global_heightmap = self.world.heightmap
+        # Catch world data locally
+        global_heightmap = self.world.heightmap_ground
         global_slope_map = self.world.slope_map
-        global_area = self.world.build_area
-        global_water_mask = self.world.water_mask
         global_water_distances = self.world.water_distances
-
+        global_water_proximity = self.world.water_proximity
+        global_area = self.world.build_area
         offset_x = self.settlement_area.x_from - global_area.x_from
         offset_z = self.settlement_area.z_from - global_area.z_from
 
@@ -70,32 +73,42 @@ class SiteLocator:
         for i in range(margin, area_width - width - margin):
             for j in range(margin, area_depth - depth - margin):
 
-                if occupied[i - margin : i + width + margin, j - margin : j + depth + margin].any():
+                if occupied[
+                    i - margin : i + width + margin,
+                    j - margin : j + depth + margin,
+                ].any():
                     continue
                 
                 gx = offset_x + i
                 gz = offset_z + j
 
-                if gx + width > global_heightmap.shape[0] or gz + depth > global_heightmap.shape[1]:
+                if gx + width > global_heightmap.shape[0] or \
+                    gz + depth > global_heightmap.shape[1]:
                     continue
-                if global_water_mask[gx : gx + width, gz : gz + depth].any():
+
+                h_slice = global_heightmap[gx:gx+width, gz:gz+depth]
+                slope_slice = global_slope_map[gx:gx+width, gz:gz+depth]
+                water_slice = global_water_distances[gx:gx+width, gz:gz+depth]
+
+                min_water_dist = water_slice.min()
+                if min_water_dist < 4:
                     continue
-                if global_water_distances[gx : gx + width, gz : gz + depth].min() < 4:
-                    continue   
 
-                area_heights = global_heightmap[gx : gx + width, gz : gz + depth]
-                area_slopes = global_slope_map[gx : gx + width, gz : gz + depth]
-
-                height_range = area_heights.max() - area_heights.min()
-                mean_slope = area_slopes.mean()
-
+                height_range = h_slice.max() - h_slice.min()
                 if height_range > 2:
                     continue
 
+                mean_slope = slope_slice.mean()
+
                 flatness_score = max(0, 1 - mean_slope / 2)
                 level_score = max(0, 1 - height_range / 3)
-                water_proximity = self.world.water_proximity[gx, gz]
-                area_score = flatness_score * 0.5 + level_score * 0.3 + water_proximity * 0.2
+                water_score = global_water_proximity[gx, gz]
+
+                area_score = (
+                    flatness_score * 0.5 + 
+                    level_score * 0.3 + 
+                    water_score * 0.2
+                )
                 
                 if area_score > 0.4:
                     candidates.append({
@@ -116,7 +129,9 @@ class SiteLocator:
             best_score = -1
 
             for c in candidates:
-                i, j = c['local_x'], c['local_z']
+                i = c['local_x']
+                j = c['local_z']
+
                 if occupied[
                     max(0, i - block_radius) : min(area_width, i + width + block_radius),
                     max(0, j - block_radius) : min(area_depth, j + depth + block_radius),
@@ -125,22 +140,25 @@ class SiteLocator:
 
                 world_x = self.settlement_area.x_from + i
                 world_z = self.settlement_area.z_from + j
-                ctr_dist_to_placed = None
+
+                ctr_dist_to_placed = float('inf')
                 if sites:
                     for s in sites:
                         d = _center_distance(
                             world_x, world_z, width, depth,
                             s['x'], s['z'], s['width'], s['depth'],
                         )
-                        if ctr_dist_to_placed is None or d < ctr_dist_to_placed:
-                            ctr_dist_to_placed = d
+                        ctr_dist_to_placed = min(ctr_dist_to_placed, d)
+
                     if ctr_dist_to_placed < min_building_dist:
                         continue  # too close to an existing building
-                else:
-                    ctr_dist_to_placed = float('inf')
 
                 # Prefer sites that are within cluster range of an existing building
-                in_cluster = 1 if (sites and min_building_dist <= ctr_dist_to_placed <= max_building_dist) else 0
+                in_cluster = (
+                    1 if (sites and min_building_dist <= ctr_dist_to_placed <= max_building_dist) 
+                    else 0
+                )
+
                 if (in_cluster, c['score']) > (best_cluster_score, best_score):
                     best_cluster_score = in_cluster
                     best_score = c['score']
@@ -150,19 +168,12 @@ class SiteLocator:
                 break
 
             i, j, score, world_x, world_z = best
+
             gx = offset_x + i
             gz = offset_z + j
 
-            if self.world.water_mask[gx:gx+width, gz:gz+depth].any():
-                continue
-            if self.world.water_distances[gx:gx+width, gz:gz+depth].min() < 2:
-                continue
-
-            if gx + width > global_heightmap.shape[0] or gz + depth > global_heightmap.shape[1]:
-                continue   
-
             base_height = int(global_heightmap[gx:gx+width, gz:gz+depth].max())
-            
+
             site = {
                 'x': world_x,
                 'z': world_z,
@@ -171,6 +182,7 @@ class SiteLocator:
                 'depth': depth,
                 'score': score,
             }
+
             sites.append(site)
             occupied[
                 max(0, i - block_radius) : min(area_width, i + width + block_radius),
@@ -178,12 +190,16 @@ class SiteLocator:
             ] = True
 
             # Remove this candidate so we don't reconsider it
-            candidates = [c for c in candidates if (c['local_x'], c['local_z']) != (i, j)]
+            candidates = [
+                c for c in candidates 
+                if (c['local_x'], c['local_z']) != (i, j)
+            ]
         
         self.sites = sites
         print(f"  ✓ Found {len(sites)} sites")
         for idx, site in enumerate(sites, 1):
             print(f"    Site {idx}: ({site['x']}, {site['z']}) score={site['score']:.2f}")
+
         return sites
 
     def visualize_sites(self):
