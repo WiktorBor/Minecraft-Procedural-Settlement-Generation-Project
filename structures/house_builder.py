@@ -2,13 +2,16 @@
 
 import random
 from gdpc import Block
+from utils.utils import clear_area
+from world.build_area import BuildArea
 
 
 class HouseBuilder:
     
-    def __init__(self, editor, palette=None):
+    def __init__(self, editor, world, palette=None):
         self.editor = editor
         self.palette = palette or self._default_palette()
+        self.world = world
     
     def _default_palette(self):
         return {
@@ -45,6 +48,14 @@ class HouseBuilder:
         roof_style = 'gabled'
         has_chimney = random.random() < 0.3
         building_height = random.randint(4, 6)
+
+        build = BuildArea(x, y, z, x + width - 1, y + building_height - 1, z + depth - 1)
+
+        clear_area(
+            editor=self.editor,
+            world=self.world,
+            building_area=build
+        )
         
         self._build_floor(x, y, z, width, depth)
         self._build_walls(x, y, z, width, building_height, depth, wall_material)
