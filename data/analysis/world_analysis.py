@@ -1,7 +1,7 @@
 from utils.http_client import GDMCClient
-from world.build_area import BuildArea
-from world.analysis_results import WorldAnalysisResult
-from scipy.ndimage import distance_transform_edt,label, uniform_filter
+from data.build_area import BuildArea
+from data.analysis_results import WorldAnalysisResult
+from scipy.ndimage import distance_transform_edt, label, uniform_filter
 import numpy as np
 
 class WorldAnalyser:
@@ -260,7 +260,6 @@ class WorldAnalyser:
         Iteratively lower the threshold if patch too small.
         """
         self._analyse()
-
         flat_mask = self.slope_map <= 0.5
         threshold = np.percentile(self.scores, 75)
         high_score_mask = self.scores >= threshold
@@ -269,12 +268,12 @@ class WorldAnalyser:
         labeled, num_features = label(mask)
         best_total_score = -np.inf
         best_zone = None
-
-        for i in range(1, num_features + 1):
-            coords = np.argwhere(labeled == i)
-            total_score = self.scores[labeled == i].sum()
-            if total_score > best_total_score:
-                best_total_score = total_score
+        
+        for i in range(1, num_features + 1): 
+            coords = np.argwhere(labeled == i) 
+            total_score = self.scores[labeled == i].sum() 
+            if total_score > best_total_score: 
+                best_total_score = total_score 
                 best_zone = coords
         
         if best_zone is None:
@@ -282,7 +281,6 @@ class WorldAnalyser:
 
         x_min, z_min = best_zone.min(axis=0)
         x_max, z_max = best_zone.max(axis=0)
-
         y_min = int(np.min(self.heightmap_ground[x_min:x_max+1, z_min:z_max+1]))
         y_max = int(np.max(self.heightmap_ground[x_min:x_max+1, z_min:z_max+1]))
 
