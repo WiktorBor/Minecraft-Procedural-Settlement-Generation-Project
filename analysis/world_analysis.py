@@ -311,7 +311,7 @@ class WorldAnalyser:
             labeled,
             index=np.arange(1, num_features + 1)
         )
-        MIN_PATCH_SIZE = 200
+        MIN_PATCH_SIZE = 100
 
         valid_labels = np.where(region_sizes >= MIN_PATCH_SIZE)[0] + 1
 
