@@ -29,6 +29,7 @@ class SiteLocator:
         self,
         max_sites=5,
         building_size=(7, 7),
+        building_height=6,
         min_gap=4,
         min_building_dist=7,
         max_building_dist=18,
@@ -45,6 +46,7 @@ class SiteLocator:
         Args:
             max_sites: Maximum number of sites to return
             building_size: (width, depth) for each building
+            building_height: Approximate vertical size of buildings (used for site BuildArea)
             min_gap: Minimum clear blocks between building edges (path space)
             min_building_dist: Minimum center-to-center distance between buildings
             max_building_dist: Prefer sites within this distance of existing buildings (cluster)
@@ -159,7 +161,8 @@ class SiteLocator:
                     z_from=world_z,
                     x_to=world_x + width - 1,
                     y_to=base_height + building_height - 1,
-                    z_to=world_z + depth - 1)
+                    z_to=world_z + depth - 1,
+                )
 
                 ctr_dist_to_placed = float('inf')
                 if sites:

@@ -2,7 +2,6 @@
 from planning.site_locator import SiteLocator
 from analysis.world_analysis import WorldAnalyser
 from structures.registry import STRUCTURES
-from structures.house.house_builder import HouseBuilder
 from pathfinding.pathway_builder import build_pathways
 
 
@@ -65,15 +64,25 @@ class SettlementGenerator:
 
     def _generate_buildings(self, analysis, sites):
         print("\n[Phase 3] Building Generation")
-        house_builder = HouseBuilder(self.editor, analysis)
         
         for idx, site in enumerate(sites, 1):
-            print(f"  Building {idx}/{len(sites)} at {site}")
-            building_data = house_builder.build(site)
-            # HouseBuilder.build returns a dict with at least:
-            #   'position': (x, y, z)
-            #   'size': (width, height, depth)
-            # which is exactly what the pathfinding code expects.
+            structure_type = "house"
+            structure_class = STRUCTURES[structure_type]
+
+            structure = structure_class(self.editor, analysis)
+            print(f"  Building {idx}/{len(sites)} at {site} ({structure_type})")
+
+            area = site["area"]
+            structure.build(area)
+
+            # Store data in a shape that the pathfinding code expects.
+            building_data = {
+                "type": structure_type,
+                "position": (area.x_from, area.y_from, area.z_from),
+                "size": (area.width, area.height, area.depth),
+                "area": area,
+                "score": site["score"],
+            }
             self.buildings.append(building_data)
         
         print(f"  ✓ Generated {len(self.buildings)} buildings")

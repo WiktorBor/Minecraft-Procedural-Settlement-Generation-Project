@@ -11,8 +11,8 @@ from gdpc import Block
 
 from pathfinding.astar import find_path
 from utils.block_utils import get_biome_palette
-from world.build_area import BuildArea
-from world.analysis_results import WorldAnalysisResult
+from data.build_area import BuildArea
+from data.analysis_results import WorldAnalysisResult
 
 
 def _is_water_column(world: WorldAnalysisResult, li_global: int, lj_global: int) -> bool:
