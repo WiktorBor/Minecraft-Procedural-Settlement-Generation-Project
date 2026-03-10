@@ -3,6 +3,7 @@ from planning.site_locator import SiteLocator
 from analysis.world_analysis import WorldAnalyser
 from structures.registry import STRUCTURES
 from structures.house.house_builder import HouseBuilder
+from pathfinding.pathway_builder import build_pathways
 
 
 class SettlementGenerator:
@@ -12,13 +13,12 @@ class SettlementGenerator:
         self.client = client
         self.buildings = []
     
-    def generate(self, num_buildings=3):
+    def generate(self, num_buildings=12):
         """
-        Generate complete settlement.
-        
+        Generate complete settlement: place structures first, then pathways.
+
         Args:
-            num_buildings: Number of buildings to generate
-            visualize: Show debug visualizations in Minecraft
+            num_buildings: Number of buildings to generate (e.g. 12-15 for village).
         """
         print("\n" + "="*50)
         print("SETTLEMENT GENERATOR")
@@ -32,6 +32,9 @@ class SettlementGenerator:
         
         # Phase 3: Generate buildings
         self._generate_buildings(analysis, sites)
+        
+        # Phase 3b: Generate pathways between building fronts
+        self._generate_pathways(analysis)
         
         # Phase 4: Finalize
         self._finalize()
@@ -62,21 +65,26 @@ class SettlementGenerator:
 
     def _generate_buildings(self, analysis, sites):
         print("\n[Phase 3] Building Generation")
+        house_builder = HouseBuilder(self.editor, analysis)
         
         for idx, site in enumerate(sites, 1):
-            structure_type = "house"
-            structure_class = STRUCTURES[structure_type]
-
-            structure = structure_class(self.editor, analysis)
-            print(f"  Building {idx}/{len(sites)} at {site} ({structure_type})")
-
-            structure.build(site["area"])
-            self.buildings.append({
-                "type": structure_type,
-                "site": site
-            })
+            print(f"  Building {idx}/{len(sites)} at {site}")
+            building_data = house_builder.build(site)
+            # HouseBuilder.build returns a dict with at least:
+            #   'position': (x, y, z)
+            #   'size': (width, height, depth)
+            # which is exactly what the pathfinding code expects.
+            self.buildings.append(building_data)
         
         print(f"  ✓ Generated {len(self.buildings)} buildings")
+    
+    def _generate_pathways(self, analysis):
+        print("\n[Phase 3b] Pathway Generation")
+        if not self.buildings:
+            print("  No buildings to connect.")
+            return
+        build_pathways(analysis, self.buildings, self.editor)
+        print("  ✓ Pathways placed between building fronts")
     
     def _finalize(self):
         print("\n[Phase 4] Finalizing...")

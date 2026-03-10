@@ -1,5 +1,6 @@
 """Finds optimal building sites with village-style spacing."""
 
+import random
 import numpy as np
 from gdpc import Block
 from data.build_area import BuildArea
@@ -28,10 +29,10 @@ class SiteLocator:
         self,
         max_sites=5,
         building_size=(7, 7),
-        building_height=10,
-        min_gap=5,
-        min_building_dist=10,
-        max_building_dist=28,
+        min_gap=4,
+        min_building_dist=7,
+        max_building_dist=18,
+        randomize_spacing=True,
     ):
         """
         Find building sites with natural village-like spacing.
@@ -39,6 +40,7 @@ class SiteLocator:
         Buildings are kept at least min_gap blocks apart (path space) and
         preferred to sit within min_building_dist–max_building_dist of each
         other so the settlement clusters like a Minecraft village.
+        When randomize_spacing is True, spacing varies per run for a more organic look.
 
         Args:
             max_sites: Maximum number of sites to return
@@ -46,10 +48,15 @@ class SiteLocator:
             min_gap: Minimum clear blocks between building edges (path space)
             min_building_dist: Minimum center-to-center distance between buildings
             max_building_dist: Prefer sites within this distance of existing buildings (cluster)
+            randomize_spacing: If True, add randomness to spacing so buildings aren't uniformly spread
 
         Returns:
             List of site dictionaries
         """
+        if randomize_spacing:
+            # Pull houses a bit closer together overall and slightly vary spacing
+            min_building_dist = max(5, min_building_dist + random.randint(-1, 1))
+            max_building_dist = max(min_building_dist + 3, max_building_dist + random.randint(-3, 3))
         print("\n=== SITE LOCATION (village spacing) ===")
         print(f"  Sites: {max_sites}, size: {building_size[0]}x{building_size[1]}, gap: {min_gap}, cluster: {min_building_dist}-{max_building_dist}m")
         print("Best area:", self.settlement_area)
@@ -117,7 +124,7 @@ class SiteLocator:
                     candidates.append({
                         'local_x': i,
                         'local_z': j,
-                        'score': area_score,
+                        'score': area_score + random.uniform(-0.08, 0.08),
                     })
         
         candidates.sort(key=lambda c: c['score'], reverse=True)
