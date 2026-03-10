@@ -1,7 +1,7 @@
 from utils.http_client import GDMCClient
 from data.build_area import BuildArea
 from data.analysis_results import WorldAnalysisResult
-from scipy.ndimage import distance_transform_edt, label, uniform_filter
+from scipy.ndimage import distance_transform_edt, label, uniform_filter, generic_filter, sum as ndi_sum
 import numpy as np
 
 class WorldAnalyser:
@@ -28,6 +28,7 @@ class WorldAnalyser:
             best_area=self.best_area,
             heightmap_ground=self.heightmap_ground,
             heightmap_surface=self.heightmap_surface,
+            roughness_map=self.roughness_map,
             plant_thickness=self.plant_thickness,
             slope_map=self.slope_map,
             water_distances=self.water_distances,
@@ -229,6 +230,14 @@ class WorldAnalyser:
 
         lookup = np.vectorize(lambda b: biome_weights.get(b, 0.5))
         return lookup(self.biomes)
+    
+    def _compute_roughness(self):
+
+        self.roughness_map = generic_filter(
+            self.heightmap_ground,
+            np.std,
+            size=5
+        )
 
     # WORLD ANALYSER
     def _analyse(self):
@@ -260,29 +269,60 @@ class WorldAnalyser:
         Iteratively lower the threshold if patch too small.
         """
         self._analyse()
-        flat_mask = self.slope_map <= 0.5
-        threshold = np.percentile(self.scores, 75)
-        high_score_mask = self.scores >= threshold
-        mask = flat_mask & high_score_mask
+        self._compute_roughness()
 
-        labeled, num_features = label(mask)
-        best_total_score = -np.inf
-        best_zone = None
+        valid_mask = (
+            (self.slope_map <= 0.5) &
+            (~self.water_mask) &
+            (self.roughness_map <= 2)
+        )
+
+        if not np.any(valid_mask):
+            raise ValueError("No valid build locations found.")
+
+        valid_scores = self.scores[valid_mask]
+
+        k = int(valid_scores.size * 0.25)
+        flat_scores = self.scores.ravel()
+        flat_valid = valid_mask.ravel()
+
+        valid_indices = np.where(flat_valid)[0]
+        top_valid = np.argpartition(valid_scores, -k)[-k:]
+        top_indices = valid_indices[top_valid]
+
+        high_score_mask = np.zeros_like(self.scores, dtype=bool)
+        high_score_mask.ravel()[top_indices] = True
+        high_score_mask = high_score_mask.reshape(self.scores.shape)
+
+        candidate_mask = valid_mask & high_score_mask
+
+        labeled, num_features = label(candidate_mask)
+        if num_features == 0:
+            raise ValueError("No contiguous build locations found.")
         
-        for i in range(1, num_features + 1): 
-            coords = np.argwhere(labeled == i) 
-            total_score = self.scores[labeled == i].sum() 
-            if total_score > best_total_score: 
-                best_total_score = total_score 
-                best_zone = coords
+        region_sizes = ndi_sum(
+            candidate_mask,
+            labeled,
+            index=np.arange(1, num_features + 1)
+        )
+        MIN_PATCH_SIZE = 200
+
+        valid_labels = np.where(region_sizes >= MIN_PATCH_SIZE)[0] + 1
+
+        if len(valid_labels) == 0:
+            raise ValueError("No sufficiently large build locations found.")
         
-        if best_zone is None:
-            raise ValueError("No suitable build location found.")
+        region_scores = ndi_sum(self.scores, labeled, index=valid_labels)
+
+        best_label = valid_labels[np.argmax(region_scores)]
+        best_zone = np.argwhere(labeled == best_label)
 
         x_min, z_min = best_zone.min(axis=0)
         x_max, z_max = best_zone.max(axis=0)
-        y_min = int(np.min(self.heightmap_ground[x_min:x_max+1, z_min:z_max+1]))
-        y_max = int(np.max(self.heightmap_ground[x_min:x_max+1, z_min:z_max+1]))
+
+        region_heights = self.heightmap_ground[x_min:x_max+1, z_min:z_max+1]
+        y_min = int(region_heights.min())
+        y_max = int(region_heights.max())
 
         self.best_area = BuildArea(
             x_min + self.build_area.x_from,

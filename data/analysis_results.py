@@ -8,6 +8,7 @@ class WorldAnalysisResult:
     best_area: BuildArea
     heightmap_ground: np.ndarray
     heightmap_surface: np.ndarray
+    roughness_map: np.ndarray
     plant_thickness: np.ndarray
     slope_map: np.ndarray
     water_distances: np.ndarray
