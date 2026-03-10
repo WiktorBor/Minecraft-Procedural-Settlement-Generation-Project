@@ -290,7 +290,7 @@ class WorldAnalyser:
         top_valid = np.argpartition(valid_scores, -k)[-k:]
         top_indices = valid_indices[top_valid]
 
-        high_score_mask = np.zeros_like(self.scores, dtype=bool)
+        high_score_mask = np.zeros_like(flat_scores, dtype=bool)
         high_score_mask.ravel()[top_indices] = True
         high_score_mask = high_score_mask.reshape(self.scores.shape)
 
