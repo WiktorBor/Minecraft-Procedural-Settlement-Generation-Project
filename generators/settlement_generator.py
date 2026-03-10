@@ -3,6 +3,7 @@ from analysis.site_locator import SiteLocator
 from world_analysis import WorldAnalyser
 from world.build_area import BuildArea
 from structures.house_builder import HouseBuilder
+from pathfinding.pathway_builder import build_pathways
 
 
 class SettlementGenerator:
@@ -12,13 +13,12 @@ class SettlementGenerator:
         self.client = client
         self.buildings = []
     
-    def generate(self, num_buildings=3):
+    def generate(self, num_buildings=12):
         """
-        Generate complete settlement.
-        
+        Generate complete settlement: place structures first, then pathways.
+
         Args:
-            num_buildings: Number of buildings to generate
-            visualize: Show debug visualizations in Minecraft
+            num_buildings: Number of buildings to generate (e.g. 12-15 for village).
         """
         print("\n" + "="*50)
         print("SETTLEMENT GENERATOR")
@@ -32,6 +32,9 @@ class SettlementGenerator:
         
         # Phase 3: Generate buildings
         self._generate_buildings(analysis, sites)
+        
+        # Phase 3b: Generate pathways between building fronts
+        self._generate_pathways(analysis)
         
         # Phase 4: Finalize
         self._finalize()
@@ -70,6 +73,14 @@ class SettlementGenerator:
             self.buildings.append(building_data)
         
         print(f"  ✓ Generated {len(self.buildings)} buildings")
+    
+    def _generate_pathways(self, analysis):
+        print("\n[Phase 3b] Pathway Generation")
+        if not self.buildings:
+            print("  No buildings to connect.")
+            return
+        build_pathways(analysis, self.buildings, self.editor)
+        print("  ✓ Pathways placed between building fronts")
     
     def _finalize(self):
         print("\n[Phase 4] Finalizing...")
