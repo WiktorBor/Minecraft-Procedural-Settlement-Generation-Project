@@ -12,7 +12,6 @@ from utils.http_client import GDMCClient
 
 
 def main():
-    
     parser = argparse.ArgumentParser(
         description='Analyse world and Generate Minecraft settlements')
     parser.add_argument('--buildings',type=int, default=3,
