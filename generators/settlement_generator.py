@@ -1,6 +1,6 @@
 """Main orchestrator for settlement generation."""
 from planning.site_locator import SiteLocator
-from data.analysis.world_analysis import WorldAnalyser
+from analysis.world_analysis import WorldAnalyser
 from structures.registry import STRUCTURES
 from structures.house.house_builder import HouseBuilder
 
