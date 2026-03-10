@@ -65,19 +65,16 @@ class SettlementGenerator:
 
     def _generate_buildings(self, analysis, sites):
         print("\n[Phase 3] Building Generation")
+        house_builder = HouseBuilder(self.editor, analysis)
         
         for idx, site in enumerate(sites, 1):
-            structure_type = "house"
-            structure_class = STRUCTURES[structure_type]
-
-            structure = structure_class(self.editor, analysis)
-            print(f"  Building {idx}/{len(sites)} at {site} ({structure_type})")
-
-            structure.build(site["area"])
-            self.buildings.append({
-                "type": structure_type,
-                "site": site
-            })
+            print(f"  Building {idx}/{len(sites)} at {site}")
+            building_data = house_builder.build(site)
+            # HouseBuilder.build returns a dict with at least:
+            #   'position': (x, y, z)
+            #   'size': (width, height, depth)
+            # which is exactly what the pathfinding code expects.
+            self.buildings.append(building_data)
         
         print(f"  ✓ Generated {len(self.buildings)} buildings")
     
