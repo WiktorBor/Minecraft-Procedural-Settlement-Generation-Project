@@ -1,5 +1,6 @@
 """Finds optimal building sites with village-style spacing."""
 
+import random
 import numpy as np
 from gdpc import Block
 from data.build_area import BuildArea
@@ -14,7 +15,7 @@ def _center_distance(area_a: BuildArea, area_b: BuildArea):
 
 class SiteLocator:
     
-    def __init__(self, world, editor):
+    def __init__(self, world, editor, plots=None):
         """
         World: WorldAnalysisResult
         Editor: GDPC Editor
@@ -22,16 +23,18 @@ class SiteLocator:
         self.world = world
         self.settlement_area: BuildArea = world.best_area
         self.editor = editor
+        self.plots = plots or []
         self.sites = []
     
     def find_sites(
         self,
         max_sites=5,
         building_size=(7, 7),
-        building_height=10,
-        min_gap=5,
-        min_building_dist=10,
-        max_building_dist=28,
+        building_height=6,
+        min_gap=4,
+        min_building_dist=7,
+        max_building_dist=18,
+        randomize_spacing=True,
     ):
         """
         Find building sites with natural village-like spacing.
@@ -39,17 +42,24 @@ class SiteLocator:
         Buildings are kept at least min_gap blocks apart (path space) and
         preferred to sit within min_building_dist–max_building_dist of each
         other so the settlement clusters like a Minecraft village.
+        When randomize_spacing is True, spacing varies per run for a more organic look.
 
         Args:
             max_sites: Maximum number of sites to return
             building_size: (width, depth) for each building
+            building_height: Approximate vertical size of buildings (used for site BuildArea)
             min_gap: Minimum clear blocks between building edges (path space)
             min_building_dist: Minimum center-to-center distance between buildings
             max_building_dist: Prefer sites within this distance of existing buildings (cluster)
+            randomize_spacing: If True, add randomness to spacing so buildings aren't uniformly spread
 
         Returns:
             List of site dictionaries
         """
+        if randomize_spacing:
+            # Pull houses a bit closer together overall and slightly vary spacing
+            min_building_dist = max(5, min_building_dist + random.randint(-1, 1))
+            max_building_dist = max(min_building_dist + 3, max_building_dist + random.randint(-3, 3))
         print("\n=== SITE LOCATION (village spacing) ===")
         print(f"  Sites: {max_sites}, size: {building_size[0]}x{building_size[1]}, gap: {min_gap}, cluster: {min_building_dist}-{max_building_dist}m")
         print("Best area:", self.settlement_area)
@@ -70,56 +80,74 @@ class SiteLocator:
         area_width = self.settlement_area.width
         area_depth = self.settlement_area.depth
 
+        if self.plots and len(self.plots) > 0:
+            plot_candidates = []
+
+            for px, pz in self.plots:
+
+                # convert world -> local settlement coords
+                i = px - self.settlement_area.x_from
+                j = pz - self.settlement_area.z_from
+
+                if 0 <= i < area_width and 0 <= j < area_depth:
+                    plot_candidates.append((i, j))
+
+        else:
+            plot_candidates = [
+                (i, j)
+                for i in range(margin, area_width - width - margin)
+                for j in range(margin, area_depth - depth - margin)
+            ]
+
         occupied = np.zeros((area_width, area_depth), dtype=bool)
         candidates = []
+
         
-        for i in range(margin, area_width - width - margin):
-            for j in range(margin, area_depth - depth - margin):
+        for i, j in plot_candidates:
+            if occupied[
+                max(0,i - margin) : min(area_width, i + width + margin),
+                max(0,j - margin) : min(area_depth,j + depth + margin)
+            ].any():
+                continue
+            
+            gx = offset_x + i
+            gz = offset_z + j
 
-                if occupied[
-                    i - margin : i + width + margin,
-                    j - margin : j + depth + margin,
-                ].any():
-                    continue
+            if gx + width > global_heightmap.shape[0] or \
+                gz + depth > global_heightmap.shape[1]:
+                continue
+
+            h_slice = global_heightmap[gx:gx+width, gz:gz+depth]
+            slope_slice = global_slope_map[gx:gx+width, gz:gz+depth]
+            water_slice = global_water_distances[gx:gx+width, gz:gz+depth]
+
+            if water_slice.min() < 4:
+                continue
+
+            height_range = h_slice.max() - h_slice.min()
+
+            if height_range > 2:
+                continue
+
+            mean_slope = slope_slice.mean()
+
+            flatness_score = max(0, 1 - mean_slope / 2)
+            level_score = max(0, 1 - height_range / 3)
+            water_score = global_water_proximity[gx, gz]
+
+            area_score = (
+                flatness_score * 0.5 + 
+                level_score * 0.3 + 
+                water_score * 0.2
+            )
                 
-                gx = offset_x + i
-                gz = offset_z + j
-
-                if gx + width > global_heightmap.shape[0] or \
-                    gz + depth > global_heightmap.shape[1]:
-                    continue
-
-                h_slice = global_heightmap[gx:gx+width, gz:gz+depth]
-                slope_slice = global_slope_map[gx:gx+width, gz:gz+depth]
-                water_slice = global_water_distances[gx:gx+width, gz:gz+depth]
-
-                min_water_dist = water_slice.min()
-                if min_water_dist < 4:
-                    continue
-
-                height_range = h_slice.max() - h_slice.min()
-                if height_range > 2:
-                    continue
-
-                mean_slope = slope_slice.mean()
-
-                flatness_score = max(0, 1 - mean_slope / 2)
-                level_score = max(0, 1 - height_range / 3)
-                water_score = global_water_proximity[gx, gz]
-
-                area_score = (
-                    flatness_score * 0.5 + 
-                    level_score * 0.3 + 
-                    water_score * 0.2
-                )
-                
-                if area_score > 0.4:
-                    candidates.append({
-                        'local_x': i,
-                        'local_z': j,
-                        'score': area_score,
-                    })
-        
+            if area_score > 0.4:
+                candidates.append({
+                    'local_x': i,
+                    'local_z': j,
+                    'score': area_score + random.uniform(-0.08, 0.08),
+                })
+    
         candidates.sort(key=lambda c: c['score'], reverse=True)
 
         sites = []
@@ -152,7 +180,8 @@ class SiteLocator:
                     z_from=world_z,
                     x_to=world_x + width - 1,
                     y_to=base_height + building_height - 1,
-                    z_to=world_z + depth - 1)
+                    z_to=world_z + depth - 1,
+                )
 
                 ctr_dist_to_placed = float('inf')
                 if sites:

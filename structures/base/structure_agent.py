@@ -19,13 +19,25 @@ class StructureAgent(ABC):
     def extract_patch(self, area: BuildArea, padding=2):
         """
         Extract a terrain heightmap patch around the build site.
+
+        The world heightmap is stored in local build-area coordinates, while
+        BuildArea stores absolute world coordinates. Convert from world-space
+        to local indices before slicing.
         """
 
         heightmap = self.world.heightmap_ground
-        x0 = max(0, area.x_from - padding)
-        z0 = max(0, area.z_from - padding)
-        x1 = min(heightmap.shape[0], area.x_to + padding + 1)
-        z1 = min(heightmap.shape[1], area.z_to + padding + 1)
+        global_area: BuildArea = self.world.build_area
+
+        # Convert world coordinates to indices relative to the global build area
+        ax0 = area.x_from - global_area.x_from
+        az0 = area.z_from - global_area.z_from
+        ax1 = area.x_to - global_area.x_from
+        az1 = area.z_to - global_area.z_from
+
+        x0 = max(0, ax0 - padding)
+        z0 = max(0, az0 - padding)
+        x1 = min(heightmap.shape[0], ax1 + padding + 1)
+        z1 = min(heightmap.shape[1], az1 + padding + 1)
 
         patch = heightmap[x0:x1, z0:z1]
         return patch
@@ -34,6 +46,8 @@ class StructureAgent(ABC):
         """
         Simple terrain slope measurement.
         """
+        if patch.size == 0:
+            return 0.0
         return patch.max() - patch.min()
 
     def is_flat(self, patch, tolerance=1):

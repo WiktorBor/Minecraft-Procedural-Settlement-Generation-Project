@@ -1,37 +1,40 @@
 """Main orchestrator for settlement generation."""
 from planning.site_locator import SiteLocator
-from analysis.world_analysis import WorldAnalyser
 from structures.registry import STRUCTURES
-from structures.house.house_builder import HouseBuilder
+from pathfinding.pathway_builder import build_pathways
+from settlement.settlement_planner import SettlementPlanner
+
 
 
 class SettlementGenerator:
     
-    def __init__(self, editor, client):
+    def __init__(self, editor, analyser, state, config):
         self.editor = editor
-        self.client = client
-        self.buildings = []
+        self.analyser = analyser
+        self.state = state
+        self.config = state
+        self.planner = SettlementPlanner(analyser, state, config)
     
-    def generate(self, num_buildings=3):
+    def generate(self, num_buildings=12):
         """
-        Generate complete settlement.
-        
+        Generate complete settlement: place structures first, then pathways.
+
         Args:
-            num_buildings: Number of buildings to generate
-            visualize: Show debug visualizations in Minecraft
+            num_buildings: Number of buildings to generate (e.g. 12-15 for village).
         """
         print("\n" + "="*50)
         print("SETTLEMENT GENERATOR")
         print("="*50)
         
-        # Phase 1: Analyse world and find best building area
-        analysis = self._analyse_world()
+        # Phase 1: Locate building sites
+        self.planner.plan()
+        sites = self._locate_sites(self.analyser, num_buildings)
         
-        # Phase 2: Locate building sites
-        sites = self._locate_sites(analysis, num_buildings)
+        # Phase 2: Generate buildings
+        self._generate_buildings(self.analyser, sites)
         
-        # Phase 3: Generate buildings
-        self._generate_buildings(analysis, sites)
+        # Phase 3: Generate pathways between building fronts
+        self._generate_pathways(self.analyser)
         
         # Phase 4: Finalize
         self._finalize()
@@ -39,23 +42,15 @@ class SettlementGenerator:
         print("\n" + "="*50)
         print("✓ SETTLEMENT GENERATION COMPLETE")
         print("="*50)
-        print(f"\nGenerated {len(self.buildings)} buildings")
+        print(f"\nGenerated {len(self.state.buildings)} buildings")
         print("\nCheck Minecraft to see your settlement!")
     
     # Private methods for each phase
-    def _analyse_world(self):
-        print("\n[Phase 1] Setup")
-
-        # Initialise WorldAnaliser
-        analyser = WorldAnalyser(self.client)
-        results = analyser.prepare()
-
-        return results
     
     def _locate_sites(self,analysis, num_buildings):
         print("\n[Phase 2] Locating building sites")
 
-        site_locator = SiteLocator(analysis, self.editor)
+        site_locator = SiteLocator(analysis, self.editor, plots=self.state.plots)
         sites = site_locator.find_sites(max_sites=num_buildings)
         print(f" {len(sites)} building sites determined.")
         return sites
@@ -70,13 +65,28 @@ class SettlementGenerator:
             structure = structure_class(self.editor, analysis)
             print(f"  Building {idx}/{len(sites)} at {site} ({structure_type})")
 
-            structure.build(site["area"])
-            self.buildings.append({
+            area = site["area"]
+            structure.build(area)
+
+            # Store data in a shape that the pathfinding code expects.
+            building_data = {
                 "type": structure_type,
-                "site": site
-            })
+                "position": (area.x_from, area.y_from, area.z_from),
+                "size": (area.width, area.height, area.depth),
+                "area": area,
+                "score": site["score"],
+            }
+            self.state.buildings.append(building_data)
         
-        print(f"  ✓ Generated {len(self.buildings)} buildings")
+        print(f"  ✓ Generated {len(self.state.buildings)} buildings")
+    
+    def _generate_pathways(self, analysis):
+        print("\n[Phase 3b] Pathway Generation")
+        if not self.state.buildings:
+            print("  No buildings to connect.")
+            return
+        build_pathways(analysis, self.state.buildings, self.editor)
+        print("  ✓ Pathways placed between building fronts")
     
     def _finalize(self):
         print("\n[Phase 4] Finalizing...")
