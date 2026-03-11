@@ -1,0 +1,129 @@
+graph TD
+    subgraph _analysis
+        world_analysis["world_analysis.py"]
+    end
+
+    subgraph _data
+        analysis_results["analysis_results.py"]
+        build_area["build_area.py"]
+        settlement_state["settlement_state.py"]
+        settlement_entities["settlement_entities.py"]
+        settlement_configurations["settlement_configurations.py"]
+    end
+
+    subgraph _generators
+        generators_init["__init__.py"]
+        settlement_generator["settlement_generator.py"]
+    end
+
+    subgraph _pathfinding
+        pathfinding_init["__init__.py"]
+        astar["astar.py"]
+        pathway_builder["pathway_builder.py"]
+    end
+
+    subgraph _planning
+        planning_init["__init__.py"]
+        site_locator["site_locator.py"]
+    end
+
+    subgraph _settlement
+        district_planner["distric_planner.py"]
+        plot_planner["plot_planner.py"]
+        road_planner["road_planner.py"]
+        settlement_planner["settlement_planner.py"]
+    end
+
+    subgraph _structures
+        subgraph base
+            structure_agent["structure_agent.py"]
+            structure["structure.py"]
+        end
+        subgraph house
+            components["components.py"]
+            house_agent["house_agent.py"]
+            house_builder["house_builder.py"]
+            house_file["house.py"]
+        end
+        structures_init["__init__.py"]
+        registry["registry.py"]
+    end
+
+    subgraph _utils
+        utils_init["__init__.py"]
+        block_utils["block_utils.py"]
+        http_client["http_client.py"]
+        terrain_utils["terrain_utils.py"]
+    end
+
+    main_py["main.py"]
+
+    %% main.py dependencies
+    main_py --> settlement_generator
+    main_py --> settlement_configurations
+    main_py --> settlement_state
+    main_py --> world_analysis
+    main_py --> http_client
+
+    %% settlement_generator.py dependencies
+    settlement_generator --> site_locator
+    settlement_generator --> registry
+    settlement_generator --> pathway_builder
+    settlement_generator --> settlement_planner
+
+    %% settlement_planner.py dependencies
+    settlement_planner --> road_planner
+    settlement_planner --> plot_planner
+    settlement_planner --> district_planner
+
+    %% road_planner.py dependencies
+    road_planner --> settlement_entities
+
+    %% plot_planner.py dependencies
+    plot_planner --> settlement_entities
+
+    %% pathway_builder.py dependencies
+    pathway_builder --> astar
+    pathway_builder --> block_utils
+    pathway_builder --> build_area
+    pathway_builder --> analysis_results
+
+    %% site_locator.py dependencies
+    site_locator --> build_area
+
+    %% registry.py dependencies
+    registry --> house_file
+
+    %% house_builder.py dependencies
+    house_builder --> terrain_utils
+    house_builder --> build_area
+    house_builder --> components
+
+    %% house_agent.py dependencies
+    house_agent --> structure_agent
+    house_agent --> build_area
+
+    %% house.py dependencies
+    house_file --> structure
+    house_file --> house_agent
+    house_file --> house_builder
+
+    %% structure_agent.py dependencies
+    structure_agent --> build_area
+
+    %% analysis/world_analysis.py dependencies
+    world_analysis --> http_client
+    world_analysis --> build_area
+    world_analysis --> analysis_results
+
+    %% analysis_results.py dependencies
+    analysis_results --> build_area
+
+    %% settlement_state.py dependencies
+    settlement_state --> settlement_entities
+
+    %% __init__.py files
+    generators_init --> settlement_generator
+    planning_init --> site_locator
+    structures_init --> house_builder
+    utils_init --> block_utils

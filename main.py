@@ -9,11 +9,14 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from gdpc import Editor
 from generators.settlement_generator import SettlementGenerator
+from data.settlement_configurations import SettlementConfig
+from data.settlement_state import SettlementState
+
+from analysis.world_analysis import WorldAnalyser
 from utils.http_client import GDMCClient
 
 
 def main():
-    
     parser = argparse.ArgumentParser(
         description='Analyse world and Generate Minecraft settlements')
     parser.add_argument('--buildings', type=int, default=None,
@@ -46,8 +49,11 @@ def main():
 
     try:
         editor = Editor(buffering=True)
+        analyser = WorldAnalyser(client).prepare()
+        state = SettlementState()
+        config = SettlementConfig()
         generator = SettlementGenerator(
-            editor, client
+            editor, analyser, state, config
         )  
 
         generator.generate(num_buildings=num_buildings)

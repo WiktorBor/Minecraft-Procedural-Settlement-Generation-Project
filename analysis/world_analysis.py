@@ -182,9 +182,15 @@ class WorldAnalyser:
         h_w, h_d = self.heightmap_ground.shape[0], self.heightmap_ground.shape[1]
         self.water_mask = np.zeros((h_w, h_d), dtype=bool)
 
-        for (x, z), (_, block_id) in self.surface_blocks.items():
-            if 0 <= x < h_w and 0 <= z < h_d and "water" in block_id:
-                self.water_mask[x][z] = True
+        coords = [
+            (x, z) for (x,z), (_, block_id) in self.surface_blocks.items()
+            if "water" in block_id
+        ]
+
+        if coords:
+            xs, zs = zip(*coords)
+            self.water_mask[xs, zs] = True
+        
         self.water_distances = distance_transform_edt(~self.water_mask)
 
     # Helper functions for scoring     
@@ -305,7 +311,7 @@ class WorldAnalyser:
             labeled,
             index=np.arange(1, num_features + 1)
         )
-        MIN_PATCH_SIZE = 200
+        MIN_PATCH_SIZE = 100
 
         valid_labels = np.where(region_sizes >= MIN_PATCH_SIZE)[0] + 1
 
