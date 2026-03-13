@@ -11,7 +11,8 @@ class GDMCClient:
             method=method,
             url=url,
             params=params,
-            json=data
+            json=data,
+            timeout=5
         )
 
         r.raise_for_status()
@@ -38,8 +39,7 @@ class GDMCClient:
 
     def check_build_area(self):
         try:
-            
             data = self.get("/buildarea")
-            return bool(data)
-        except Exception:
+            return data is not None and all(k in data for k in ["xFrom", "yFrom", "zFrom", "xTo", "yTo", "zTo"])
+        except requests.exceptions.RequestException:
             return False

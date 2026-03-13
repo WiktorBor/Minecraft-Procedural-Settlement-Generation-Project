@@ -1,6 +1,6 @@
-from utils.http_client import GDMCClient
 from data.build_area import BuildArea
 from data.analysis_results import WorldAnalysisResult
+from data.configurations import TerrainConfig
 from scipy.ndimage import distance_transform_edt, label, uniform_filter, generic_filter, sum as ndi_sum
 import numpy as np
 
@@ -11,16 +11,14 @@ class WorldAnalyser:
     The best area is dinamically sized to fit the largest high-scoring patch.
     Only 'prepare()' should be called from outside, which runs the full analysis and sets 'best_area'.
     """
-    def __init__(self, client: GDMCClient):
-        self.client = client
+    def __init__(self, terrain_loader):
+        self.terrain = terrain_loader
+        self.configuration = TerrainConfig()
 
     def prepare(self) -> WorldAnalysisResult:
         self._fetch_build_area()
         self._fetch_heightmaps()
-        self._fetch_surface_blocks()
         self._fetch_biomes()
-        self.compute_slope_map()
-
         self._get_best_location()
 
         return WorldAnalysisResult(
@@ -28,29 +26,24 @@ class WorldAnalyser:
             best_area=self.best_area,
             heightmap_ground=self.heightmap_ground,
             heightmap_surface=self.heightmap_surface,
+            heightmap_ocean_floor=self.heightmap_ocean_floor,
             roughness_map=self.roughness_map,
             plant_thickness=self.plant_thickness,
             slope_map=self.slope_map,
+            water_mask=self.water_mask,
             water_distances=self.water_distances,
             water_proximity=self.water_proximity,
-            surface_blocks=self.surface_blocks,
             biomes=self.biomes,
             scores=self.scores
         )
-
-    # HTTP FETCH FUNCTIONS
+    
+    # FETCH FUNCTIONS
     def _fetch_build_area(self):
         """
-        Determine build area around the first player, 
-        fallback to server build area if needed.
+        Determine build area from the world interface. 
+        This is the area we will analyze for building suitability.
         """
-        if not self.client.check_build_area():
-            print("\n No build area set. Set it in-game first, e.g.:")
-            print("   /buildarea set ~ ~ ~ ~199 ~ ~199   (200x200 from your position)")
-            print("   Or: /buildarea set x1 y1 z1 x2 y2 z2")
-            raise SystemExit(1)
-
-        data = self.client.get("/buildarea")
+        data = self.terrain.get_build_area()
 
         self.build_area = BuildArea(
             x_from = data["xFrom"],
@@ -60,139 +53,65 @@ class WorldAnalyser:
             y_to = data["yTo"],
             z_to = data["zTo"],
         )
+        if self.build_area.width <= 0 or self.build_area.depth <= 0:
+            raise ValueError("Build area has non-positive dimensions")
    
     def _fetch_heightmaps(self):
         """
-        Fetch heightmaps for the full build area in chunks.
+        Fetch heightmaps for the full build area.
         """
-        params={
-            "x": self.build_area.x_from,
-            "z": self.build_area.z_from,
-            "width": self.build_area.width,
-            "depth": self.build_area.depth,
-            }
         
-        # Fetch surface
-        surface = self.client.get("/heightmap", {
-            **params,
-            "type": "MOTION_BLOCKING"
-        })
-        self.heightmap_surface = np.array(surface)
+        x = self.build_area.x_from
+        z = self.build_area.z_from
+        w = self.build_area.width
+        d = self.build_area.depth
 
-        # Fetch ground
-        ground = self.client.get("/heightmap", {
-            **params,
-            "type": "MOTION_BLOCKING_NO_PLANTS"
-        })
-        self.heightmap_ground = np.array(ground)
+        self.heightmap_surface = np.array(
+            self.terrain.get_heightmap(x, z, w, d, "MOTION_BLOCKING")
+        )
 
-        # Compute plant thickness and final heightmap
+        self.heightmap_ground = np.array(
+            self.terrain.get_heightmap(x, z, w, d, "MOTION_BLOCKING_NO_PLANTS")
+        )
+
+        self.heightmap_ocean_floor = np.array(
+            self.terrain.get_heightmap(x, z, w, d, "OCEAN_FLOOR")
+        )
+
+        # Compute plant thickness
         self.plant_thickness = self.heightmap_surface - self.heightmap_ground
-
-    def _fetch_surface_blocks(self, depth=20, Chunk = 32):
-        """
-        Fetch top surface blocks for the entire build area.
-        """
-        self.surface_blocks = {}
-
-        h_w, h_d = self.heightmap_ground.shape[0], self.heightmap_ground.shape[1]
-        fetched_columns = set()
-
-        for x in range(0, h_w, Chunk):
-            for z in range(0, h_d, Chunk):
-                dx = min(Chunk, h_w - x)
-                dz = min(Chunk, h_d - z)
-
-                world_x = self.build_area.x_from + x
-                world_z = self.build_area.z_from + z
-
-                chunk_heights = self.heightmap_ground[x:x+dx, z:z+dz]
-
-                if chunk_heights.size == 0:
-                    continue
-
-                y_top = int(np.max(chunk_heights))
-                if y_top < 0:
-                    continue
-
-                blocks = self.client.get("/blocks", params={
-                    "x": world_x,
-                    "z": world_z,
-                    "y": max(0, y_top - depth),
-                    "dx": dx,
-                    "dz": dz,
-                    "dy": depth,
-                })
-
-                if not blocks:
-                    continue
-
-                columns = {}
-                for block in blocks:
-                    lx = block["x"] - self.build_area.x_from
-                    lz = block["z"] - self.build_area.z_from
-                    if 0 <= lx < h_w and 0 <= lz < h_d:
-                        key = (lx, lz)
-                        columns.setdefault(key, []).append(block)
-                
-                for (lx, lz), column_blocks in columns.items():
-                    if (lx, lz) in fetched_columns:
-                        continue
-
-                    column_blocks.sort(key=lambda b: b["y"], reverse=True)
-
-                    for block in column_blocks:
-                        block_id = block.get("id", "air")
-
-                        if not any(k in block_id for k in ("air", "_leaves", "_log",
-                        "_wood", "grass", "flower")):
-                            self.surface_blocks[(lx, lz)] = (block["y"], block_id)
-                            fetched_columns.add((lx, lz))
-                            break
-
+    
     def _fetch_biomes(self):
-        data = self.client.get("/biomes", params={
-                "x": self.build_area.x_from,
-                "z": self.build_area.z_from,
-                "width": self.build_area.width,
-                "depth": self.build_area.depth,
-            })
-
-        arr = np.array([list(row) for row in data])
+        data = self.terrain.get_biomes(
+            self.build_area.x_from,
+            self.build_area.z_from,
+            self.build_area.width,
+            self.build_area.depth,
+            )
 
         # If only 1D, make 2D
-        if arr.ndim == 1:
-            arr = arr.reshape((1, -1))
+        if data.ndim == 1:
+            data = data.reshape((1, -1))
 
         # Repeat array to match heightmap size
-        reps_x = self.build_area.width  // arr.shape[0] + 1
-        reps_z = self.build_area.depth  // arr.shape[1] + 1
-        arr = np.tile(arr, (reps_x, reps_z))
+        reps_x = self.build_area.width  // data.shape[0] + 1
+        reps_z = self.build_area.depth  // data.shape[1] + 1
+        data = np.tile(data, (reps_x, reps_z))
 
         # Trim to exact dimensions
-        arr = arr[:self.build_area.width, :self.build_area.depth]
+        data = data[:self.build_area.width, :self.build_area.depth]
 
-        self.biomes = arr
+        self.biomes = data
+
 
     def compute_slope_map(self):
         gx, gz = np.gradient(self.heightmap_ground)
         self.slope_map = np.sqrt(gx**2 + gz**2)
     
     def _build_water_mask(self):
-        h_w, h_d = self.heightmap_ground.shape[0], self.heightmap_ground.shape[1]
-        self.water_mask = np.zeros((h_w, h_d), dtype=bool)
-
-        coords = [
-            (x, z) for (x,z), (_, block_id) in self.surface_blocks.items()
-            if "water" in block_id
-        ]
-
-        if coords:
-            xs, zs = zip(*coords)
-            self.water_mask[xs, zs] = True
-        
+        self.water_mask = self.heightmap_surface != self.heightmap_ocean_floor
         self.water_distances = distance_transform_edt(~self.water_mask)
-
+    
     # Helper functions for scoring     
     def _compute_flatness(self, radius=5):
         size = 2 * radius + 1
@@ -204,7 +123,7 @@ class WorldAnalyser:
 
         return 1 / (1 + std)
 
-    def _compute_accessibility(self,):
+    def _compute_accessibility(self):
         h = self.heightmap_ground
 
         up = np.abs(h - np.roll(h, -1, axis=0)) <= 1
@@ -225,47 +144,47 @@ class WorldAnalyser:
 
     def _compute_biome_score(self):
 
-        biome_weights = {
-            "minecraft:plains": 1.0,
-            "minecraft:forest": 0.8,
-            "minecraft:savanna": 0.8,
-            "minecraft:desert": 0.5,
-            "minecraft:swamp": 0.2,
-            "minecraft:ocean": 0.0
-        }
-
-        lookup = np.vectorize(lambda b: biome_weights.get(b, 0.5))
+        lookup = np.vectorize(lambda b: TerrainConfig.biome_weights.get(b, 0.5))
         return lookup(self.biomes)
     
-    def _compute_roughness(self):
+    def _compute_roughness(self, radius = 5):
 
         self.roughness_map = generic_filter(
             self.heightmap_ground,
             np.std,
-            size=5
+            size=radius
         )
 
     # WORLD ANALYSER
     def _analyse(self):
         """Compute scores for all positions in the build area."""
 
-        flatness = self._compute_flatness()
+        flatness = self._compute_flatness(radius=self.configuration.radius)
         access = self._compute_accessibility()
-        self._build_water_mask()
+        self._build_water_mask()        
         self.water_proximity = (16 - np.minimum(self.water_distances, 16)) / 16
-        expansion = self._compute_expansion()
+        expansion = self._compute_expansion(radius=self.configuration.radius)
         biome = self._compute_biome_score()
+        self.compute_slope_map()
+
         forest_penalty = np.clip(self.plant_thickness / 5.0, 0, 1)
+        slope_penalty = np.clip(self.slope_map / 3.0, 0, 1)
+
+        water_penalty = self.water_mask.astype(float)
+        water_proximity_bonus = self.water_proximity * (~self.water_mask).astype(float)
+
         max_h = np.max(self.heightmap_ground)
-        elevation = self.heightmap_ground / max_h if max_h > 0 else np.zeros_like(self.heightmap)
+        elevation = self.heightmap_ground / max_h if max_h > 0 else np.zeros_like(self.heightmap_ground)
         self.scores = (
             1.5 * flatness +
             2.0 * access +
             2.0 * expansion +
-            0.8 * self.water_proximity +
+            0.8 * water_proximity_bonus -
+            1.0 * water_penalty +
             0.8 * elevation +
             0.5 * biome -
-            2.0 * forest_penalty
+            2.0 * forest_penalty - 
+            2.0 * slope_penalty
         )
 
     # GET BEST LOCATION
@@ -277,6 +196,7 @@ class WorldAnalyser:
         self._analyse()
         self._compute_roughness()
 
+        # Build valid terrain mask
         valid_mask = (
             (self.slope_map <= 0.5) &
             (~self.water_mask) &
@@ -287,12 +207,12 @@ class WorldAnalyser:
             raise ValueError("No valid build locations found.")
 
         valid_scores = self.scores[valid_mask]
+        k = max(int(valid_scores.size * 0.25), 1)
 
-        k = int(valid_scores.size * 0.25)
         flat_scores = self.scores.ravel()
         flat_valid = valid_mask.ravel()
-
         valid_indices = np.where(flat_valid)[0]
+
         top_valid = np.argpartition(valid_scores, -k)[-k:]
         top_indices = valid_indices[top_valid]
 
@@ -311,16 +231,36 @@ class WorldAnalyser:
             labeled,
             index=np.arange(1, num_features + 1)
         )
-        MIN_PATCH_SIZE = 100
+        MIN_PATCH_SIZE = TerrainConfig.min_patch_size
 
         valid_labels = np.where(region_sizes >= MIN_PATCH_SIZE)[0] + 1
 
         if len(valid_labels) == 0:
             raise ValueError("No sufficiently large build locations found.")
-        
-        region_scores = ndi_sum(self.scores, labeled, index=valid_labels)
 
-        best_label = valid_labels[np.argmax(region_scores)]
+        best_label = None
+        best_score = -np.inf
+
+        for label_id in valid_labels:
+
+            region = np.argwhere(labeled == label_id)
+            area = len(region)
+
+            x_min, z_min = region.min(axis=0)
+            x_max, z_max = region.max(axis=0)
+
+            box_area = (x_max - x_min + 1) * (z_max - z_min + 1)
+
+            compactness = area / box_area
+
+            mean_score = np.mean(self.scores[labeled == label_id])
+
+            final_score = mean_score * compactness * area
+
+            if final_score > best_score:
+                best_score = final_score
+                best_label = label_id
+        
         best_zone = np.argwhere(labeled == best_label)
 
         x_min, z_min = best_zone.min(axis=0)

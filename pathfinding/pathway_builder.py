@@ -17,14 +17,9 @@ from data.analysis_results import WorldAnalysisResult
 
 def _is_water_column(world: WorldAnalysisResult, li_global: int, lj_global: int) -> bool:
     """
-    Return True if the surface block in this build-area column is water.
-    Uses surface_blocks collected during world analysis.
+    Return True if this column contains water using the precomputed water mask.
     """
-    col = world.surface_blocks.get((li_global, lj_global))
-    if not col:
-        return False
-    _, block_id = col
-    return "water" in str(block_id)
+    return world.water_mask[li_global, lj_global]
 
 def _world_to_best_area_local(wx: int, wz: int, best_area: BuildArea) -> Tuple[int, int]:
     """Convert world (x, z) to local indices (i, j) relative to best_area."""

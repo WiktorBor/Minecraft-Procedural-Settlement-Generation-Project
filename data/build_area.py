@@ -27,3 +27,27 @@ class BuildArea:
             self.y_from <= y <= self.y_to and
             self.z_from <= z <= self.z_to
         )
+    
+    def contains_xz(self, x, z):
+        return (
+            self.x_from <= x <= self.x_to and
+            self.z_from <= z <= self.z_to
+        )
+    
+    def world_to_index(self, x, z):
+        if not self.build_area.contains_xz(x, z):
+            raise ValueError("Coordinates out of build area bounds")
+        
+        i = x - self.build_area.x_from
+        j = z - self.build_area.z_from
+        return i, j
+    
+    def index_to_world(self, i, j):
+
+        if i < 0 or j < 0 or i >= self.width or j >= self.depth:
+            raise ValueError(f"{(i,j)} outside build area indices")
+
+        x = self.x_from + i
+        z = self.z_from + j
+
+        return x, z

@@ -4,17 +4,53 @@ import random
 import sys
 import argparse
 from pathlib import Path
+import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from gdpc import Editor
 from generators.settlement_generator import SettlementGenerator
-from data.settlement_configurations import SettlementConfig
+from data.configurations import SettlementConfig
 from data.settlement_state import SettlementState
 
 from analysis.world_analysis import WorldAnalyser
 from utils.http_client import GDMCClient
+from world_interface.terrain_loader import TerrainLoader
 
+def plot_analysis(wa):
+    # Absolute coordinates relative to build area
+    x0, z0 = wa.best_area.x_from - wa.build_area.x_from, wa.best_area.z_from - wa.build_area.z_from
+    x1, z1 = wa.best_area.x_to - wa.build_area.x_from, wa.best_area.z_to - wa.build_area.z_from
+
+    fig, axs = plt.subplots(2, 2, figsize=(12, 10))
+
+    # Ground height
+    im0 = axs[0,0].imshow(wa.heightmap_ground, cmap="terrain")
+    axs[0,0].set_title("Ground Heightmap")
+    plt.colorbar(im0, ax=axs[0,0])
+
+    # Slope map
+    im1 = axs[0,1].imshow(wa.slope_map, cmap="magma")
+    axs[0,1].set_title("Slope Map")
+    plt.colorbar(im1, ax=axs[0,1])
+
+    # Water proximity
+    im2 = axs[1,0].imshow(wa.water_proximity, cmap="Blues")
+    axs[1,0].set_title("Water Proximity")
+    plt.colorbar(im2, ax=axs[1,0])
+
+    # Overall score
+    im3 = axs[1,1].imshow(wa.scores, cmap="viridis")
+    axs[1,1].set_title("Overall Score")
+    plt.colorbar(im3, ax=axs[1,1])
+
+    # Highlight best area on score map
+    axs[1,1].add_patch(
+        plt.Rectangle((z0, x0), z1-z0, x1-x0, edgecolor='red', facecolor='none', linewidth=2)
+    )
+
+    plt.tight_layout()
+    plt.show()
 
 def main():
     parser = argparse.ArgumentParser(
@@ -49,7 +85,9 @@ def main():
 
     try:
         editor = Editor(buffering=True)
-        analyser = WorldAnalyser(client).prepare()
+        terrain_loader = TerrainLoader(client)
+        analyser = WorldAnalyser(terrain_loader).prepare()
+        plot_analysis(analyser)
         state = SettlementState()
         config = SettlementConfig()
         generator = SettlementGenerator(
