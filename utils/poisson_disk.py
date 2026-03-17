@@ -1,30 +1,42 @@
+from __future__ import annotations
+
 import math
 import random
+
 import numpy as np
 
-def poisson_disk(width, height, radius, score_map=None, seed=None, k=30) -> np.ndarray:
+
+def poisson_disk(
+    width: int,
+    height: int,
+    radius: float,
+    score_map: np.ndarray | None = None,
+    seed: int | None = None,
+    k: int = 30,
+) -> np.ndarray:
     """
-    Terrain-weighted Poisson disk sampling.
+    Terrain-weighted Poisson disk sampling (Bridson's algorithm).
 
     Parameters
     ----------
     width, height : int
-        Size of the rectangular area
+        Size of the rectangular area.
     radius : float
-        Minimum distance between samples
+        Minimum distance between samples.
     score_map : np.ndarray or None
-        Terrain preference map [x,z] with values 0..1 (1 = preferable).
+        Terrain preference map [x, z] with values 0..1 (1 = preferable).
+        Must have shape (width, height) or broadcastable equivalent.
     seed : int or None
-        Random seed
+        Random seed for reproducibility.
     k : int
-        Attempts per active point
+        Number of candidate attempts per active point (default 30).
 
     Returns
     -------
     np.ndarray
-        Nx2 array of sample coordinates (float) in local index space [0, width), [0, height).
+        Shape (N, 2) array of sample coordinates (float32) in local index
+        space [0, width) × [0, height).
     """
-
     if seed is not None:
         random.seed(seed)
         np.random.seed(seed)
@@ -32,83 +44,87 @@ def poisson_disk(width, height, radius, score_map=None, seed=None, k=30) -> np.n
     cell_size = radius / math.sqrt(2)
     grid_w = int(width / cell_size) + 1
     grid_h = int(height / cell_size) + 1
+    radius_sq = radius * radius  # hoisted — used in every neighbour check
 
-    # grid stores nearest sample per cell (for distance checking)
-    grid = [[None for _ in range(grid_h)] for _ in range(grid_w)]
+    # numpy grid: stores sample index + 1 at each cell (0 = empty).
+    # Using indices avoids storing float tuples and makes lookups cheaper.
+    grid = np.zeros((grid_w, grid_h), dtype=np.int32)
 
-    samples = []
-    active = []
+    samples: list[tuple[float, float]] = []
+    active: list[tuple[float, float]] = []
 
-    # helper for safe terrain score lookup
-    def terrain_score(x, z):
-        if score_map is None:
+    # Pre-flatten score_map to float32 once so per-point lookup is just indexing.
+    if score_map is not None:
+        _score: np.ndarray = np.asarray(score_map, dtype=np.float32)
+    else:
+        _score = None
+
+    def _terrain_score(x: float, z: float) -> float:
+        if _score is None:
             return 1.0
-        ix = min(int(x), score_map.shape[0] - 1)
-        iz = min(int(z), score_map.shape[1] - 1)
-        return score_map[ix, iz]
+        return float(_score[min(int(x), _score.shape[0] - 1),
+                             min(int(z), _score.shape[1] - 1)])
 
-    # ------------------
-    # first point
-    # ------------------
+    def _add_sample(x: float, z: float) -> None:
+        idx = len(samples) + 1          # 1-based so 0 stays "empty"
+        samples.append((x, z))
+        active.append((x, z))
+        grid[int(x / cell_size), int(z / cell_size)] = idx
+
+    def _is_valid(x: float, z: float) -> bool:
+        gx = int(x / cell_size)
+        gz = int(z / cell_size)
+        x0, x1 = max(gx - 2, 0), min(gx + 3, grid_w)
+        z0, z1 = max(gz - 2, 0), min(gz + 3, grid_h)
+
+        window = grid[x0:x1, z0:z1]          # numpy slice — no Python loop
+        occupied = window[window > 0] - 1     # convert to 0-based sample indices
+
+        if occupied.size == 0:
+            return True
+
+        nbrs = np.array(samples, dtype=np.float32)[occupied]  # (m, 2)
+        dx = nbrs[:, 0] - x
+        dz = nbrs[:, 1] - z
+        return bool(np.all(dx * dx + dz * dz >= radius_sq))
+
+    # ------------------------------------------------------------------
+    # First point — rejection-sampled against terrain score
+    # ------------------------------------------------------------------
     while True:
         x = random.uniform(0, width)
         z = random.uniform(0, height)
-        if random.random() < terrain_score(x, z):
+        if random.random() < _terrain_score(x, z):
             break
+    _add_sample(x, z)
 
-    samples.append((x, z))
-    active.append((x, z))
-
-    gx = int(x / cell_size)
-    gz = int(z / cell_size)
-    grid[gx][gz] = (x, z)
-
-    # ------------------
-    # main loop
-    # ------------------
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
     while active:
         idx = random.randrange(len(active))
         px, pz = active[idx]
         found = False
 
-        for _ in range(k):
-            angle = random.uniform(0, 2 * math.pi)
-            dist = random.uniform(radius, 2 * radius)
+        # Batch-generate all k candidates at once — one numpy call instead of k
+        angles = np.random.uniform(0, 2 * math.pi, k)
+        dists  = np.random.uniform(radius, 2 * radius, k)
+        cands_x = px + np.cos(angles) * dists
+        cands_z = pz + np.sin(angles) * dists
 
-            x = px + math.cos(angle) * dist
-            z = pz + math.sin(angle) * dist
-
-            if not (0 <= x < width and 0 <= z < height):
+        for cx, cz in zip(cands_x, cands_z):
+            if not (0 <= cx < width and 0 <= cz < height):
                 continue
-
-            if random.random() >= terrain_score(x, z):
+            if random.random() >= _terrain_score(cx, cz):
                 continue
-
-            gx = int(x / cell_size)
-            gz = int(z / cell_size)
-
-            ok = True
-            for ix in range(max(gx - 2, 0), min(gx + 3, grid_w)):
-                for iz in range(max(gz - 2, 0), min(gz + 3, grid_h)):
-                    neighbor = grid[ix][iz]
-                    if neighbor is None:
-                        continue
-                    dx = neighbor[0] - x
-                    dz = neighbor[1] - z
-                    if dx * dx + dz * dz < radius * radius:
-                        ok = False
-                        break
-                if not ok:
-                    break
-
-            if ok:
-                samples.append((x, z))
-                active.append((x, z))
-                grid[gx][gz] = (x, z)
+            if _is_valid(cx, cz):
+                _add_sample(cx, cz)
                 found = True
                 break
 
         if not found:
-            active.pop(idx)
+            # O(1) swap-and-pop instead of O(n) mid-list removal
+            active[idx] = active[-1]
+            active.pop()
 
-    return np.array(samples, dtype=float)
+    return np.array(samples, dtype=np.float32)

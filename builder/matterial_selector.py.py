@@ -1,4 +1,4 @@
-from data.biome_palletes import get_biome_palette
+from data.biome_palettes import get_biome_palette
 
 def _path_blocks_from_biome(world) -> str:
     """Sample biome at center of best_area and return path block id."""
