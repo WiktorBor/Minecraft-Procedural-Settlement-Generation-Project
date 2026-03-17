@@ -1,5 +1,5 @@
 from structures.base.structure_agent import StructureAgent
-from data.build_area import BuildArea
+from data.settlement_entities import Plot
 
 class HouseAgent(StructureAgent):
     """
@@ -7,7 +7,7 @@ class HouseAgent(StructureAgent):
     Analyzes terrain and returns building parameters.
     """
 
-    def decide(self, area: BuildArea) -> dict:
+    def decide(self, plot: Plot) -> dict:
         """
         Analyze the site and return building decisions.
         
@@ -17,22 +17,34 @@ class HouseAgent(StructureAgent):
         Returns:
             Dictionary with building parameters
         """
-        patch = self.extract_patch(area)
-
-        # Simple decision logic based on terrain features
-        slope = self.compute_slope(patch)
-
-        roof_type = "gabled"
-        floors = 1
+        patch = self.extract_patch(plot)
+        if not self.is_flat(patch, tolerance=1):
+            # If terrain is too uneven, we might choose not to build
+            return {
+                "build": False
+            }
         
-        if slope > 2:
-            roof_type = "steep"
-        
-        if area.width > 10:
-            floors = 2
-
+        import random
+        rotation = random.choice([0, 90, 180, 270])
         return {
-            "roof_type": roof_type,
-            "floors": floors,
-            "chimney": True
+            "build": True,
+            "rotation": rotation
         }
+
+        # # Simple decision logic based on terrain features
+        # slope = self.compute_slope(patch)
+
+        # roof_type = "gabled"
+        # floors = 1
+        
+        # if slope > 2:
+        #     roof_type = "steep"
+        
+        # if plot.width > 10:
+        #     floors = 2
+
+        # return {
+        #     "roof_type": roof_type,
+        #     "floors": floors,
+        #     "chimney": True
+        # }

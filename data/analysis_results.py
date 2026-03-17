@@ -4,8 +4,13 @@ from .build_area import BuildArea
 
 @dataclass
 class WorldAnalysisResult:
-    build_area: BuildArea
+    """
+    Container for all analysis results of the world, to be used by planners.
+    All np.ndarrays grids are [x, z] indexed and correspond to the build area.
+    """
     best_area: BuildArea
+
+    # shape: [width, depth]
     heightmap_ground: np.ndarray
     heightmap_surface: np.ndarray
     heightmap_ocean_floor: np.ndarray
@@ -14,6 +19,5 @@ class WorldAnalysisResult:
     slope_map: np.ndarray
     water_mask: np.ndarray
     water_distances: np.ndarray
-    water_proximity: np.ndarray
     biomes: np.ndarray
     scores: np.ndarray

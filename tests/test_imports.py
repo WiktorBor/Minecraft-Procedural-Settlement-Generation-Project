@@ -15,10 +15,10 @@ try:
     from structures.house.house_builder import HouseBuilder
     print("  OK structures.house_builder")
     
-    from planning.site_locator import SiteLocator
+    from site_locator.site_locator import SiteLocator
     print("  OK analysis.site_locator")
     
-    from utils.block_utils import get_biome_palette
+    from data.biome_palletes import get_biome_palette
     print("  OK utils.block_utils")
     
     print("\nAll imports successful!")

@@ -10,18 +10,19 @@ class Structure(ABC):
         self.world = world
 
     @abstractmethod
-    def build(self, site):
+    def build(self, plot):
         """
-        Build the structure at the given site.
+        Build the structure at the given plot.
         
         Args:
-            site:
+            plot:
                 {
                     'x': int,
+                    'y': int,
                     'z': int,
                     'width': int,
                     'depth': int,
-                    'height': int
+                    'type': str
                 }
         """
         pass

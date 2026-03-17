@@ -1,6 +1,7 @@
 from structures.base.structure import Structure
 from .house_agent import HouseAgent
 from .house_builder import HouseBuilder
+from data.settlement_entities import Plot
 
 class House(Structure):
 
@@ -10,8 +11,6 @@ class House(Structure):
         self.agent = HouseAgent(world)
         self.builder = HouseBuilder(editor, world)
 
-    def build(self, site):
-
-        decisions = self.agent.decide(site)
-
-        self.builder.build_house(site, decisions)
+    def build(self, plot: Plot):
+        decisions = self.agent.decide(plot)
+        self.builder.build_house(plot, decisions)

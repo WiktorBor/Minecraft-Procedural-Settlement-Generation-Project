@@ -31,32 +31,43 @@ def find_path(
     Returns:
         List of (local_x, local_z) from start to goal (inclusive), or None if no path exists.
     """
-    if not walkable_2d[start[0], start[1]]:
-        return None
-    if not walkable_2d[goal[0], goal[1]]:
-        return None
+    if walkable_2d.shape != heightmap.shape:
+        raise ValueError("walkable_2d and heightmap must have the same shape")
 
     h_w, h_d = walkable_2d.shape
+    goal_x, goal_z = goal
+
     if not (0 <= start[0] < h_w and 0 <= start[1] < h_d):
         return None
     if not (0 <= goal[0] < h_w and 0 <= goal[1] < h_d):
+        return None
+    
+    if not walkable_2d[start[0], start[1]]:
+        return None
+    if not walkable_2d[goal[0], goal[1]]:
         return None
 
     # 4-neighborhood: (dx, dz)
     neighbors = [(0, 1), (0, -1), (1, 0), (-1, 0)]
 
     def heuristic(ix: int, iz: int) -> float:
-        return abs(ix - goal[0]) + abs(iz - goal[1])
-
+        return abs(ix - goal_x) + abs(iz - goal_z)
+    
     # Priority queue: (f_score, counter, (ix, iz))
     counter = 0
-    open_set = [(heuristic(start[0], start[1]), counter, start)]
+    open_set = [(heuristic(*start), counter, start)]
+
     came_from: dict[Tuple[int, int], Optional[Tuple[int, int]]] = {start: None}
     g_score: dict[Tuple[int, int], float] = {start: 0.0}
+    closed = set()
 
     while open_set:
         _, _, (ix, iz) = heapq.heappop(open_set)
 
+        if (ix, iz) in closed:
+            continue
+        closed.add((ix, iz))
+        
         if (ix, iz) == goal:
             path: List[Tuple[int, int]] = []
             current: Optional[Tuple[int, int]] = (ix, iz)
@@ -84,7 +95,8 @@ def find_path(
             step_cost = 1.0 + height_cost * height_diff
             tentative_g = my_g + step_cost
 
-            if (nx, nz) not in g_score or tentative_g < g_score[(nx, nz)]:
+            old_g = g_score.get((nx, nz))
+            if old_g is None or tentative_g < old_g:
                 came_from[(nx, nz)] = (ix, iz)
                 g_score[(nx, nz)] = tentative_g
                 counter += 1
