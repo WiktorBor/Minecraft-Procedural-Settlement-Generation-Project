@@ -1,160 +1,179 @@
-"""Main entry point: World analysis, settlement planning, and structure generation."""
+"""Main entry point: world analysis, settlement planning, and structure generation."""
+from __future__ import annotations
 
+
+import argparse
+import logging
 import random
 import sys
-import argparse
-from pathlib import Path
-import matplotlib.pyplot as plt
 
-from gdpc import Editor, Block
+import matplotlib.pyplot as plt
+from gdpc import Block, Editor
+
 from analysis.world_analysis import WorldAnalyser
-from utils.http_client import GDMCClient
-from world_interface.terrain_loader import TerrainLoader
-from world_interface.road_placer import RoadBuilder
-from data.configurations import TerrainConfig, SettlementConfig
+from data.biome_palettes import get_biome_palette
+from data.configurations import SettlementConfig, TerrainConfig
 from data.settlement_state import SettlementState
 from generators.settlement_generator import SettlementGenerator
+from utils.http_client import GDMCClient
+from world_interface.road_placer import RoadBuilder
+from world_interface.terrain_loader import TerrainLoader
 
-# ----------------------------
-# Optional debug visualization of analysis
-# ----------------------------
-def plot_analysis(wa):
-    # Coordinates relative to build area
-    x0 = wa.best_area.x_from 
-    z0 = wa.best_area.z_from 
-    x1 = wa.best_area.x_to 
-    z1 = wa.best_area.z_to 
+# ---------------------------------------------------------------------------
+# Logging — configure once at entry point; all modules use getLogger(__name__)
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logging.getLogger("planning.settlement.plot_planner").setLevel(logging.DEBUG)
+logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Debug visualisation
+# ---------------------------------------------------------------------------
+
+def plot_analysis(wa) -> None:
+    """Display a 2×2 matplotlib grid of terrain analysis maps."""
     fig, axs = plt.subplots(2, 2, figsize=(12, 10))
 
-    # Ground height
-    im0 = axs[0,0].imshow(wa.heightmap_ground, cmap="terrain")
-    axs[0,0].set_title("Ground Heightmap")
-    plt.colorbar(im0, ax=axs[0,0])
+    im0 = axs[0, 0].imshow(wa.heightmap_ground,  cmap="terrain")
+    axs[0, 0].set_title("Ground Heightmap")
+    plt.colorbar(im0, ax=axs[0, 0])
 
-    # Slope map
-    im1 = axs[0,1].imshow(wa.slope_map, cmap="magma")
-    axs[0,1].set_title("Slope Map")
-    plt.colorbar(im1, ax=axs[0,1])
+    im1 = axs[0, 1].imshow(wa.slope_map,          cmap="magma")
+    axs[0, 1].set_title("Slope Map")
+    plt.colorbar(im1, ax=axs[0, 1])
 
-    # Water proximity
-    im2 = axs[1,0].imshow(wa.water_distances, cmap="Blues")
-    axs[1,0].set_title("Water Distance")
-    plt.colorbar(im2, ax=axs[1,0])
+    im2 = axs[1, 0].imshow(wa.water_distances,    cmap="Blues")
+    axs[1, 0].set_title("Water Distance")
+    plt.colorbar(im2, ax=axs[1, 0])
 
-    # Overall terrain score
-    im3 = axs[1,1].imshow(wa.scores, cmap="viridis")
-    axs[1,1].set_title("Overall Score")
-    plt.colorbar(im3, ax=axs[1,1])
+    im3 = axs[1, 1].imshow(wa.scores,             cmap="viridis")
+    axs[1, 1].set_title("Overall Score")
+    plt.colorbar(im3, ax=axs[1, 1])
 
-    # Highlight best area
-    axs[1,1].add_patch(
-        plt.Rectangle((z0, x0), z1 - z0, x1 - x0,
-                      edgecolor='red', facecolor='none', linewidth=2)
+    x0 = wa.best_area.x_from
+    z0 = wa.best_area.z_from
+    x1 = wa.best_area.x_to
+    z1 = wa.best_area.z_to
+    axs[1, 1].add_patch(
+        plt.Rectangle(
+            (z0, x0), z1 - z0, x1 - x0,
+            edgecolor="red", facecolor="none", linewidth=2,
+        )
     )
 
     plt.tight_layout()
     plt.show()
 
 
-# ----------------------------
-# Main generation pipeline
-# ----------------------------
-def main():
-    parser = argparse.ArgumentParser(
-        description='Analyse world and generate Minecraft settlements'
-    )
-    parser.add_argument('--buildings', type=int, default=None,
-                        help='Number of buildings (default: random 12-15 for village)')
-    parser.add_argument('--visualize', action='store_true',
-                        help='Show debug visualization in Minecraft')
+def visualize_in_world(editor: Editor, analysis, state: SettlementState) -> None:
+    """Place debug markers in Minecraft for plots, district centres, and roads."""
+    area      = analysis.best_area
+    heightmap = analysis.heightmap_ground
 
+    # Gold block at each plot centre
+    for plot in state.plots:
+        try:
+            li, lj = area.world_to_index(int(plot.center_x), int(plot.center_z))
+        except ValueError:
+            continue
+        y = int(heightmap[li, lj])
+        editor.placeBlock((int(plot.center_x), y + 1, int(plot.center_z)),
+                          Block("minecraft:gold_block"))
+
+    # Red wool at each district centre
+    for district in state.districts.district_list:
+        cx, cz = int(district.center_x), int(district.center_z)
+        try:
+            li, lj = area.world_to_index(cx, cz)
+        except ValueError:
+            continue
+        y = int(heightmap[li, lj])
+        editor.placeBlock((cx, y + 2, cz), Block("minecraft:red_wool"))
+
+    # Roads
+    palette      = get_biome_palette()
+    road_builder = RoadBuilder(editor, analysis, palette)
+    road_builder.build(state.roads)
+
+    editor.flushBuffer()
+
+
+# ---------------------------------------------------------------------------
+# Main pipeline
+# ---------------------------------------------------------------------------
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Analyse world and generate a Minecraft settlement."
+    )
+    parser.add_argument(
+        "--buildings", type=int, default=None,
+        help="Number of buildings to place (default: random 12–15).",
+    )
+    parser.add_argument(
+        "--visualize", action="store_true",
+        help="Show matplotlib analysis plots and place debug markers in-world.",
+    )
     args = parser.parse_args()
 
-    # Decide number of buildings
-    num_buildings = args.buildings or random.randint(12, 15)
-    print(f"\nUsing {num_buildings} buildings for this village.")
+    num_buildings = args.buildings if args.buildings is not None else random.randint(12, 15)
+    logger.info("Targeting %d buildings for this settlement.", num_buildings)
 
-    print("\n" + "="*60)
-    print("GDMC WORLD ANALYSIS AND SETTLEMENT GENERATOR")
-    print("="*60)
-
-    # Connect to GDMC
+    # --- connect ---
     client = GDMCClient()
     if not client.check_connection():
-        print("\nCould not connect to GDMC HTTP Interface. Is Minecraft running?")
-        sys.exit(1)
+        logger.error("Could not connect to GDMC HTTP Interface. Is Minecraft running?")
+        return 1
 
-    print("\nConnection OK. Using current build area.")
+    logger.info("Connection OK. Using current build area.")
 
     try:
-        # ----------------------------
-        # Editor and Terrain
-        # ----------------------------
-        editor = Editor(buffering=True)
-        terrain_loader = TerrainLoader(client)
+        editor         = Editor(buffering=True)
         terrain_config = TerrainConfig()
+        terrain_loader = TerrainLoader(client)
 
-        # ----------------------------
-        # World analysis
-        # ----------------------------
-        analyser = WorldAnalyser(
-            terrain_loader=terrain_loader,
-            configuration=terrain_config
-        )
+        # --- world analysis ---
+        logger.info("Analysing world...")
+        analyser        = WorldAnalyser(terrain_loader=terrain_loader, configuration=terrain_config)
         analysis_result = analyser.prepare()
-        print("✓ World analysis complete")
-        print("Best build area:", analysis_result.best_area)
+        logger.info("World analysis complete. Best area: %s", analysis_result.best_area)
 
-        # Optional: visualize terrain maps
-        plot_analysis(analysis_result)
+        if args.visualize:
+            plot_analysis(analysis_result)
 
-        # ----------------------------
-        # Settlement planning
-        # ----------------------------
+        # --- settlement generation ---
         settlement_config = SettlementConfig()
+        palette           = get_biome_palette()   # default plains; extend with biome detection later
 
         generator = SettlementGenerator(
             editor=editor,
-            analyser=analysis_result,
-            config=settlement_config
+            analysis=analysis_result,
+            settlement_config=settlement_config,
+            terrain_config=terrain_config,
+            palette=palette,
         )
 
-        print("\nGenerating settlement...")
-        generator.generate(num_buildings=num_buildings)  # builds roads, plots, and houses
-        print("\n✓ Settlement generation complete")
+        state = generator.generate(num_buildings=num_buildings)
+        logger.info("Settlement generation complete.")
 
-        # Optional: visualize plots and district centers in Minecraft
+        # --- optional in-world debug markers ---
         if args.visualize:
-            area = analysis_result.best_area
-            for plot in generator.state.plots:
-                x_center, z_center = area.world_to_index(plot.x + plot.width, plot.z + plot.depth)
-                x_center //= 2
-                z_center //= 2
-                y = analysis_result.heightmap_ground[x_center, z_center]
-                editor.placeBlock((x_center, y + 1, z_center), Block("gold_block"))  # plot center marker
+            visualize_in_world(editor, analysis_result, state)
 
-            for district in generator.state.districts.district_list:
-                x, z = district.center
-                x_local, z_local = area.world_to_index(x, z)
-                y = analysis_result.heightmap_ground[x_local, z_local]
-                editor.placeBlock((x, y + 2, z), Block("red_wool"))  # district center
-            
-            road_builder = RoadBuilder(editor, analysis_result)
-            road_builder.build(generator.state.roads)
-            editor.flushBuffer()
-
-        # ----------------------------
-        # Summary
-        # ----------------------------
-        print("\n--- SETTLEMENT SUMMARY ---")
-        print("Districts:", len(generator.state.districts.district_list))
-        print("Road cells:", len(generator.state.roads))
-        print("Plots:", len(generator.state.plots))
-        print("Buildings:", len(generator.state.buildings))
+        # --- summary ---
+        logger.info("--- SETTLEMENT SUMMARY ---")
+        logger.info("  Districts : %d", len(state.districts.district_list))
+        logger.info("  Road cells: %d", state.road_cell_count)
+        logger.info("  Plots     : %d", state.plot_count)
+        logger.info("  Buildings : %d", state.building_count)
 
     except KeyboardInterrupt:
-        print("\n⚠ Generation cancelled by user")
+        logger.warning("Generation cancelled by user.")
         return 1
 
     return 0

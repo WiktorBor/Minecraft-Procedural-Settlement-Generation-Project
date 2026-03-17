@@ -18,7 +18,7 @@ try:
     from site_locator.site_locator import SiteLocator
     print("  OK analysis.site_locator")
     
-    from data.biome_palletes import get_biome_palette
+    from data.biome_palettes import get_biome_palette
     print("  OK utils.block_utils")
     
     print("\nAll imports successful!")

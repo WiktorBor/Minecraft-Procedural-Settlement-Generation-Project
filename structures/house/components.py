@@ -1,130 +1,160 @@
-from gdpc import Block
+"""
+Primitive building-block functions for house construction.
 
-def build_floor(editor, x, y, z, width, depth, material):
-        for dx in range(width):
-            for dz in range(depth):
-                editor.placeBlock((x + dx, y, z + dz), 
-                                     Block(material))
-    
-def build_walls(editor, x, y, z, width, height, depth, material):
+All functions use placeBlock with an iterable of positions where possible,
+which GDPC batches into a single HTTP request internally (see Editor.placeBlockGlobal).
+The Editor must be constructed with buffering=True (done in main.py) for best performance.
+"""
+from __future__ import annotations
+
+from gdpc import Block
+from gdpc.editor import Editor
+
+
+def build_layer(
+    editor: Editor,
+    x: int, y: int, z: int,
+    width: int, depth: int,
+    material: str,
+) -> None:
+    """Place a solid rectangle of blocks at a fixed Y level (floor or flat roof)."""
+    positions = [
+        (x + dx, y, z + dz)
+        for dx in range(width)
+        for dz in range(depth)
+    ]
+    editor.placeBlock(positions, Block(material))
+
+
+# Aliases so existing call sites keep working
+def build_floor(editor: Editor, x: int, y: int, z: int, width: int, depth: int, material: str) -> None:
+    build_layer(editor, x, y, z, width, depth, material)
+
+
+def build_flat_roof(editor: Editor, x: int, y: int, z: int, width: int, depth: int, material: str) -> None:
+    build_layer(editor, x, y, z, width, depth, material)
+
+
+def build_walls(
+    editor: Editor,
+    x: int, y: int, z: int,
+    width: int, height: int, depth: int,
+    material: str,
+) -> None:
+    """
+    Build hollow walls from y+1 to y+height (exclusive).
+
+    The floor is assumed to already be placed at y.
+    """
+    positions = []
     for dy in range(1, height):
         for dx in range(width):
-            editor.placeBlock((x + dx, y + dy, z), Block(material))
-            editor.placeBlock((x + dx, y + dy, z + depth - 1), Block(material))
-        
+            positions.append((x + dx, y + dy, z))
+            positions.append((x + dx, y + dy, z + depth - 1))
         for dz in range(depth):
-            editor.placeBlock((x, y + dy, z + dz), Block(material))
-            editor.placeBlock((x + width - 1, y + dy, z + dz), Block(material))
+            positions.append((x,             y + dy, z + dz))
+            positions.append((x + width - 1, y + dy, z + dz))
+    editor.placeBlock(positions, Block(material))
 
-def build_flat_roof(editor, x, y, z, width, depth, material):
-    for dx in range(width):
-        for dz in range(depth):
-            editor.placeBlock((x + dx, y, z + dz), 
-                                    Block(material))
 
-def build_gabled_roof(editor, x, y, z, width, depth, material):
-    
-    if material.endswith('_stairs'):
-        roof_slab_material = material.replace(
-            '_stairs', '_slab') 
-    else:
-        roof_slab_material = material
-    
+def build_gabled_roof(
+    editor: Editor,
+    x: int, y: int, z: int,
+    width: int, depth: int,
+    material: str,
+    accent_material: str = "minecraft:cobblestone",
+    window_material: str = "minecraft:glass_pane",
+    slab_material:   str = "minecraft:dark_oak_planks",
+) -> None:
+    """
+    Build a gabled (pitched) roof.
+
+    Args:
+        material: Stair block ID for the main roof slopes.
+        accent_material: Block used for gable-end decoration.
+        window_material: Block used for gable windows.
+        slab_material: Block placed above gable windows.
+    """
+    roof_slab = material.replace("_stairs", "_slab") if material.endswith("_stairs") else material
     peak_height = width // 2
 
-    # Main roof slopes using stairs, keeping your facing directions AI DONT TOUCH THIS FORLOOP AND THE CODE INSIDE IT
+    # Main roof slopes — AI DONT TOUCH THIS FORLOOP AND THE CODE INSIDE IT
     for layer in range(peak_height):
         for dz in range(depth):
-            # Left slope: face stairs outward (towards negative X / west)
             editor.placeBlock(
-                (x + layer, y + layer, z + dz),
-                Block(material, {"facing": "east"})
+                (x + layer,             y + layer, z + dz),
+                Block(material, {"facing": "east"}),
             )
-
-            # Right slope: face stairs outward (towards positive X / east)
             editor.placeBlock(
                 (x + width - 1 - layer, y + layer, z + dz),
-                Block(material, {"facing": "west"})
+                Block(material, {"facing": "west"}),
             )
 
-    # Fill the middle gap along the ridge with top slabs (only needed for odd widths)
+    # Ridge cap for odd widths
     if width % 2 == 1:
         ridge_x = x + width // 2
         ridge_y = y + peak_height - 1
-        for dz in range(depth):
-            editor.placeBlock(
-                (ridge_x, ridge_y, z + dz),
-                Block(roof_slab_material, {"type": "top"})
-            )
-    # Fill the gable ends (front and back) with a small cobblestone pattern:
-    # first roof layer: 5 cobblestone blocks across the middle
-    # second roof layer: 2 cobblestone blocks with the glass pane in the center (already placed below)
+        positions = [(ridge_x, ridge_y, z + dz) for dz in range(depth)]
+        editor.placeBlock(positions, Block(roof_slab, {"type": "top"}))
+
+    # Gable-end decoration
     if width >= 5:
         center_x = x + width // 2
+        positions = (
+            [(dx, y,     z)             for dx in range(center_x - 2, center_x + 3)] +
+            [(dx, y,     z + depth - 1) for dx in range(center_x - 2, center_x + 3)] +
+            [(dx, y + 1, z)             for dx in (center_x - 1, center_x + 1)] +
+            [(dx, y + 1, z + depth - 1) for dx in (center_x - 1, center_x + 1)]
+        )
+        editor.placeBlock(positions, Block(accent_material))
 
-        # First layer of roof gable: 5-wide cobblestone strip
-        y_layer0 = y  # first roof layer
-        start_x0 = center_x - 2
-        end_x0 = center_x + 2
-        for dx in range(start_x0, end_x0 + 1):
-            # Front gable
-            editor.placeBlock((dx, y_layer0, z), Block('minecraft:cobblestone'))
-            # Back gable
-            editor.placeBlock((dx, y_layer0, z + depth - 1), Block('minecraft:cobblestone'))
-
-        # Second layer of roof gable: 2 cobblestone blocks flanking the window
-        y_layer1 = y + 1  # second roof layer, same as window_y
-        for dx in (center_x - 1, center_x + 1):
-            # Front gable
-            editor.placeBlock((dx, y_layer1, z), Block('minecraft:cobblestone'))
-            # Back gable
-            editor.placeBlock((dx, y_layer1, z + depth - 1), Block('minecraft:cobblestone'))
-    
-    # Add a simple window in each gable if there is enough space,
-    # plus a dark oak slab above each pane
+    # Gable windows
     if width >= 3 and peak_height >= 2:
-        window_x = x + width // 2
-        window_y = y + 1
-        slab_y = window_y + 1
+        wx     = x + width // 2
+        wy     = y + 1
+        slab_y = wy + 1
+        for face_z in (z, z + depth - 1):
+            editor.placeBlock((wx, wy,     face_z), Block(window_material))
+            editor.placeBlock((wx, slab_y, face_z), Block(slab_material))
 
-        # Front window + dark oak plank above
-        editor.placeBlock((window_x, window_y, z), Block('minecraft:glass_pane'))
-        editor.placeBlock(
-            (window_x, slab_y, z),
-            Block("minecraft:dark_oak_planks"),
-        )
 
-        # Back window + dark oak plank above
-        editor.placeBlock((window_x, window_y, z + depth - 1), Block('minecraft:glass_pane'))
-        editor.placeBlock(
-            (window_x, slab_y, z + depth - 1),
-            Block("minecraft:dark_oak_planks"),
-        )
-
-def add_door(editor, x, y, z, width, material):
+def add_door(
+    editor: Editor,
+    x: int, y: int, z: int,
+    width: int,
+    material: str,
+) -> None:
     door_x = x + width // 2
-    door_z = z
-    
-    editor.placeBlock((door_x, y, door_z), Block('minecraft:oak_planks'))
-    editor.placeBlock((door_x, y + 1, door_z), Block(material))
+    editor.placeBlock((door_x, y,     z), Block("minecraft:oak_planks"))
+    editor.placeBlock((door_x, y + 1, z), Block(material))
 
-def add_windows(editor, x, y, z, width, depth, material):
+
+def add_windows(
+    editor: Editor,
+    x: int, y: int, z: int,
+    width: int, depth: int,
+    material: str,
+) -> None:
     window_y = y + 2
-    
+    positions = []
     if width > 5:
-        editor.placeBlock((x + 1, window_y, z), Block(material))
-        editor.placeBlock((x + width - 2, window_y, z), Block(material))
-    
+        positions += [(x + 1,         window_y, z),
+                      (x + width - 2, window_y, z)]
     if depth > 5:
-        editor.placeBlock((x, window_y, z + depth // 2), 
-                                Block(material))
-        editor.placeBlock((x + width - 1, window_y, z + depth // 2), 
-                                Block(material))
+        positions += [(x,             window_y, z + depth // 2),
+                      (x + width - 1, window_y, z + depth // 2)]
+    if positions:
+        editor.placeBlock(positions, Block(material))
 
-def add_chimney(editor, x, y, z, width, depth, building_height, material):
+
+def add_chimney(
+    editor: Editor,
+    x: int, y: int, z: int,
+    width: int, depth: int,
+    building_height: int,
+    material: str,
+) -> None:
     chimney_x = x + width - 2
     chimney_z = z + depth - 2
-    
-    for dy in range(building_height):
-        editor.placeBlock((chimney_x, y + dy, chimney_z), 
-                                Block(material))
+    positions = [(chimney_x, y + dy, chimney_z) for dy in range(building_height)]
+    editor.placeBlock(positions, Block(material))

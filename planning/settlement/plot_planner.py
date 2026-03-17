@@ -1,215 +1,203 @@
-from typing import List, Set, Tuple
+from __future__ import annotations
+
+import math
+import logging
+from collections.abc import Iterable
+
 import numpy as np
-from utils.poisson_disk import poisson_disk
-from data.settlement_entities import Plot, Districts, RoadCell
+
 from data.analysis_results import WorldAnalysisResult
 from data.configurations import SettlementConfig
+from data.settlement_entities import District, Districts, Plot, RoadCell
+from utils.poisson_disk import poisson_disk
+
+logger = logging.getLogger(__name__)
+
 
 class PlotPlanner:
     """
-    Creates building plots within each district,
-      ensuring they fit terrain constraints and do not overlap with roads or other plots.
+    Creates building plots within each Voronoi district, ensuring plots fit
+    terrain constraints and do not overlap roads or each other.
     """
 
     def __init__(
-            self, 
-            analysis: WorldAnalysisResult, 
-            districts: Districts,
-            roads: List[RoadCell],
-            config: SettlementConfig
-    ):
-        self.analysis = analysis
+        self,
+        analysis: WorldAnalysisResult,
+        districts: Districts,
+        roads: Iterable[RoadCell],
+        config: SettlementConfig,
+    ) -> None:
+        self.analysis  = analysis
         self.districts = districts
-        self.road_set: Set[Tuple[int, int]] = {(r.x, r.z) for r in roads}
-        self.config = config
+        self.roads     = frozenset(roads)   # O(1) membership, immutable
+        self.config    = config
+
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
 
     def _valid(
-            self, 
-            x_start: int, 
-            z_start: int, 
-            plot_w: int, 
-            plot_d: int
+        self,
+        local_x: int,
+        local_z: int,
+        plot_w: int,
+        plot_d: int,
     ) -> bool:
         """
-        Validate that the entire plot rectangle is on suitable terrain.
+        Validate a plot rectangle using vectorised array slicing.
+
+        All terrain checks are performed on numpy slices — no Python loop
+        over individual cells.
         """
-        area = self.analysis.best_area
+        area  = self.analysis.best_area
+        x_end = local_x + plot_w
+        z_end = local_z + plot_d
 
-        heights = []
+        # Bounds check
+        if x_end > self.analysis.heightmap_ground.shape[0]:
+            return False
+        if z_end > self.analysis.heightmap_ground.shape[1]:
+            return False
 
+        slope     = self.analysis.slope_map      [local_x:x_end, local_z:z_end]
+        roughness = self.analysis.roughness_map  [local_x:x_end, local_z:z_end]
+        water_d   = self.analysis.water_distances[local_x:x_end, local_z:z_end]
+        heights   = self.analysis.heightmap_ground[local_x:x_end, local_z:z_end]
+
+        if slope.max() > self.config.max_slope:
+            logger.debug("  rejected: slope %.2f > %.2f", float(slope.max()), self.config.max_slope)
+            return False
+        if roughness.max() > self.config.max_roughness:
+            logger.debug("  rejected: roughness %.2f > %.2f", float(roughness.max()), self.config.max_roughness)
+            return False
+        if water_d.min() < self.config.min_water_distance:
+            logger.debug("  rejected: water_dist %.2f < %d", float(water_d.min()), self.config.min_water_distance)
+            return False
+        if heights.max() - heights.min() > self.config.max_height_variation:
+            logger.debug("  rejected: height_var %.2f > %d", float(heights.max() - heights.min()), self.config.max_height_variation)
+            return False
+
+        # Road overlap
+        wx0, wz0 = area.index_to_world(local_x, local_z)
         for dx in range(plot_w):
             for dz in range(plot_d):
-
-                x = x_start + dx
-                z = z_start + dz
-
-                if not area.contains_xz(x, z):
+                if RoadCell(wx0 + dx, wz0 + dz) in self.roads:
+                    logger.debug("  rejected: road overlap at (%d, %d)", wx0+dx, wz0+dz)
                     return False
 
-                ix, iz = area.world_to_index(x, z)
-
-                if self.analysis.slope_map[ix, iz] > self.config.max_slope:
-                    return False
-
-                if self.analysis.roughness_map[ix, iz] > self.config.max_roughness:
-                    return False
-
-                if self.analysis.water_distances[ix, iz] < self.config.min_water_distance:
-                    return False
-
-                if (x, z) in self.road_set:
-                    return False
-                
-                heights.append(self.analysis.heightmap_ground[ix, iz])
-
-        if max(heights) - min(heights) > self.config.max_height_variation:
-            return False
-        
         return True
-    
-    def _center_distance(self, x1, z1, x2, z2):
-        return np.sqrt((x1-x2)**2 + (z1-z2)**2)
-    
-    def _road_direction(self, x, z):
 
-        neighbors = [
-            (x+1, z),
-            (x-1, z),
-            (x, z+1),
-            (x, z-1)
-        ]
+    # ------------------------------------------------------------------
+    # Generation
+    # ------------------------------------------------------------------
 
-        for nx, nz in neighbors:
-            if (nx, nz) in self.road_set:
-                return nx-x, nz-z
-
-        return None
-
-    def generate(self) -> List[Plot]:
+    def generate(self) -> list[Plot]:
         """
-        Generate plots inside each Voronoi district, 
-        respecting terrain constraints and avoiding overlaps.
+        Generate plots inside each Voronoi district.
+
+        Returns
+        -------
+        list[Plot]
+            All valid, non-overlapping plots across all districts.
         """
-        districts_map = self.districts.map
+        districts_map   = self.districts.map
         districts_types = self.districts.types
 
-        w, d = districts_map.shape
+        w, d     = districts_map.shape
         occupied = np.zeros((w, d), dtype=bool)
 
-        plots: List[Plot] = []
-        plot_centers: List[Tuple[int, int]] = []
+        plots:        list[Plot]           = []
+        plot_centers: list[tuple[int,int]] = []
 
         for district_idx, dtype in districts_types.items():
             district_mask = districts_map == district_idx
-
             if not np.any(district_mask):
                 continue
 
-            # Determine Poisson radius / spacing
+            # Spacing by district type
             min_dist = self.config.min_plot_distance
+            if   dtype == "residential": min_dist = max(2, min_dist // 2)
+            elif dtype == "farming":     min_dist = int(min_dist * 1.5)
+            elif dtype == "forest":      min_dist = int(min_dist * 2)
 
-            if dtype == "residential":
-                min_dist = max(2, min_dist // 2)
-            elif dtype == "farming":
-                min_dist = int(min_dist * 1.5)
-            elif dtype == "fishing":
-                min_dist = min_dist
-            else:
-                min_dist = int(min_dist * 2)
-
-            # Get bounding box of the district
+            # Bounding box of this district
             xs, zs = np.where(district_mask)
+            x_min, x_max = int(xs.min()), int(xs.max())
+            z_min, z_max = int(zs.min()), int(zs.max())
+            width  = x_max - x_min + 1
+            depth  = z_max - z_min + 1
 
-            x_min, x_max = xs.min(), xs.max()
-            z_min, z_max = zs.min(), zs.max()
+            sample_points = poisson_disk(width=width, height=depth, radius=min_dist)
 
-            # Sample points in the bounding rectangle
-            width = x_max - x_min + 1 
-            depth = z_max - z_min + 1
+            plot_w   = self.config.plot_width.get(dtype, 8)
+            plot_d   = self.config.plot_depth.get(dtype, 8)
+            min_size = self.config.min_plot_size.get(dtype, 4)
 
-            sample_points = poisson_disk(
-                width=width, 
-                height=depth, 
-                radius=min_dist
-            )
+            # Auto-scale plot size down if the district bounding box is too small
+            max_plot = max(min_size, min(width, depth) // 2)
+            plot_w   = min(plot_w, max_plot)
+            plot_d   = min(plot_d, max_plot)
+
+            if plot_w < min_size or plot_d < min_size:
+                logger.debug("District %d (%s): bounding box %dx%d too small for min plot size %d, skipping.",
+                             district_idx, dtype, width, depth, min_size)
+                continue
 
             for lx, lz in sample_points:
                 local_x = int(x_min + lx)
                 local_z = int(z_min + lz)
 
-                if local_x >=w or local_z >= d:
+                if local_x + plot_w > w or local_z + plot_d > d:
                     continue
 
-                # Plot size from config
-                plot_w = self.config.plot_width.get(dtype, 8)
-                plot_d = self.config.plot_depth.get(dtype, 8)
-
-                min_size = self.config.min_plot_size.get(dtype, 4)
-
-                if plot_w < min_size or plot_d < min_size:
-                    continue
-
-                occ_slice = occupied[
-                    local_x:local_x + plot_w,
-                    local_z:local_z + plot_d
-                ]
-
-                dist_slice = district_mask[
-                    local_x:local_x + plot_w,
-                    local_z:local_z + plot_d
-                ]
+                occ_slice  = occupied     [local_x:local_x + plot_w, local_z:local_z + plot_d]
+                dist_slice = district_mask[local_x:local_x + plot_w, local_z:local_z + plot_d]
 
                 if occ_slice.shape != (plot_w, plot_d):
                     continue
-
-                if np.any(occ_slice | ~dist_slice):
+                # Reject if any cell is already occupied
+                if np.any(occ_slice):
+                    continue
+                # Require at least 50% of the plot to lie within this district
+                if dist_slice.mean() < 0.5:
                     continue
 
-                # Convert to world coordinates
-                wx, wz = self.analysis.best_area.index_to_world(local_x, local_z)
-
-                if not self._valid(wx, wz, plot_w, plot_d):
+                if not self._valid(local_x, local_z, plot_w, plot_d):
                     continue
 
-                if plot_centers:
-                    cx = local_x + plot_w // 2
-                    cz = local_z + plot_d // 2
-
-                    distances = [
-                        self._center_distance(
-                            cx, cz, px, pz)
-                        for px, pz in plot_centers
-                    ]
-                    nearest = min(distances)
-
-                    if nearest < self.config.min_plot_cluster_distance:
-                        continue
-
-                    if nearest > self.config.max_plot_cluster_distance:
-                        if np.random.random() < 0.6:
-                            continue
-                block_radius = self.config.min_plot_cluster_distance // 2
-                
-                # Mark the **entire plot area** as occupied
-                occupied[
-                    max(0, local_x - block_radius):min(w, local_x + plot_w + block_radius), 
-                    max(0, local_z - block_radius):min(d, local_z + plot_d + block_radius)
-                ] = True
-
+                # Cluster distance check
                 cx = local_x + plot_w // 2
                 cz = local_z + plot_d // 2
 
+                if plot_centers:
+                    nearest = min(
+                        math.hypot(cx - px, cz - pz)
+                        for px, pz in plot_centers
+                    )
+                    if nearest < self.config.min_plot_cluster_distance:
+                        continue
+                    if nearest > self.config.max_plot_cluster_distance:
+                        if np.random.random() < 0.6:
+                            continue
+
+                # Mark footprint + buffer as occupied
+                block_r = self.config.min_plot_cluster_distance // 2
+                occupied[
+                    max(0, local_x - block_r):min(w, local_x + plot_w + block_r),
+                    max(0, local_z - block_r):min(d, local_z + plot_d + block_r),
+                ] = True
+
                 plot_centers.append((cx, cz))
 
-                plots.append(
-                    Plot(
-                        x=wx,
-                        y=self.analysis.heightmap_ground[local_x, local_z],
-                        z=wz,
-                        width=plot_w,
-                        depth=plot_d,
-                        type=dtype
-                    )
-                )
+                wx, wz = self.analysis.best_area.index_to_world(local_x, local_z)
+                plots.append(Plot(
+                    x=wx,
+                    z=wz,
+                    y=int(self.analysis.heightmap_ground[local_x, local_z]),
+                    width=plot_w,
+                    depth=plot_d,
+                    type=dtype,
+                ))
 
+        logger.info("Generated %d plots across %d districts.", len(plots), len(districts_types))
         return plots

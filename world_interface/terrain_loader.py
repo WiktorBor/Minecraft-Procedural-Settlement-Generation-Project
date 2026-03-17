@@ -1,26 +1,35 @@
+from __future__ import annotations
+
 import numpy as np
-from typing import Any
 from data.build_area import BuildArea
 from utils.http_client import GDMCClient
+
+
 class TerrainLoader:
     """
-    Loads terrain data from a GDMC server via the client interface.
+    Loads terrain data from a GDMC HTTP server.
     All coordinates are in world space.
     """
-    def __init__(self, client: GDMCClient):
+
+    def __init__(self, client: GDMCClient) -> None:
         self.client = client
 
     def get_build_area(self) -> BuildArea:
         """
-        Fetch the build area from the server.
-        Raises SystemExit if no build area is set.
+        Fetch the active build area from the server.
+
+        Raises
+        ------
+        RuntimeError
+            If no build area has been set in-game.
         """
         if not self.client.check_build_area():
             raise RuntimeError(
-                "\n No build area set. Set it in-game first, e.g.:\n"
-                "   /buildarea set ~ ~ ~ ~199 ~ ~199   (200x200 from your position) \n"
-                "   Or: /buildarea set x1 y1 z1 x2 y2 z2")
-        
+                "\nNo build area set. Set it in-game first, e.g.:\n"
+                "  /buildarea set ~ ~ ~ ~199 ~ ~199   (200×200 from your position)\n"
+                "  /buildarea set x1 y1 z1 x2 y2 z2"
+            )
+
         data = self.client.get("/buildarea")
         return BuildArea(
             x_from=data["xFrom"],
@@ -28,55 +37,71 @@ class TerrainLoader:
             z_from=data["zFrom"],
             x_to=data["xTo"],
             y_to=data["yTo"],
-            z_to=data["zTo"]
+            z_to=data["zTo"],
         )
 
-    def get_heightmap(self, x, z, width, depth, heightmap_type) -> np.ndarray:
+    def get_heightmap(
+        self,
+        x: int,
+        z: int,
+        width: int,
+        depth: int,
+        heightmap_type: str,
+    ) -> np.ndarray:
         """
-        Fetch a 2D heightmap of given type.
-        Returns:
-            np.ndarray of shape [width, depth], indexed by [x, z]."""
-        try:
-            data = self.client.get("/heightmap", {
-                "x": x,
-                "z": z,
-                "dx": width,
-                "dz": depth,
-                "type": heightmap_type
-            })
-        except Exception as e:
-            raise RuntimeError("Failed to fetch heightmap") from e
-        return np.array(data)
+        Fetch a 2-D heightmap of the given type.
 
-    def get_biomes(self, x, z, width, depth) -> np.ndarray:
+        Returns
+        -------
+        np.ndarray, shape (width, depth), dtype float32.
         """
-        Fetch a 2D array of biome IDs.
-        Returns:
-            np.ndarray of shape [width, depth], indexed by [x, z].
+        data = self.client.get("/heightmap", {
+            "x": x, "z": z,
+            "dx": width, "dz": depth,
+            "type": heightmap_type,
+        })
+        return np.asarray(data, dtype=np.float32)
+
+    def get_biomes(
+        self,
+        x: int,
+        z: int,
+        width: int,
+        depth: int,
+    ) -> np.ndarray:
+        """
+        Fetch a 2-D array of biome name strings.
+
+        Returns
+        -------
+        np.ndarray of dtype object, shape approximately (width, depth).
+        Exact shape may differ from (width, depth) — see WorldFetcher.fetch_biomes
+        for the tiling/trimming step that normalises it.
         """
         data = self.client.get("/biomes", {
-            "x": x,
-            "z": z,
-            "width": width,
-            "depth": depth,
+            "x": x, "z": z,
+            "width": width, "depth": depth,
         })
-        return np.array([list(row) for row in data])
+        return np.asarray(data, dtype=object)
 
-    def get_blocks(self, x, y, z, dx, dy, dz) -> np.ndarray:
+    def get_blocks(
+        self,
+        x: int,
+        y: int,
+        z: int,
+        dx: int,
+        dy: int,
+        dz: int,
+    ) -> np.ndarray:
         """
-        Fetch a 3D array of blocks from the server.
-        Returns:
-            np.ndarray of shape [dx, dy, dz], indexed by [x, y, z].
+        Fetch a 3-D array of block ID strings.
+
+        Returns
+        -------
+        np.ndarray of dtype object, shape (dx, dy, dz).
         """
-        try:
-            data = self.client.get("/blocks", {
-                "x": x,
-                "y": y,
-                "z": z,
-                "dx": dx,
-                "dy": dy,
-                "dz": dz
-            })
-        except Exception as e:
-            raise RuntimeError(f"Failed to load blocks at ({x},{y},{z}) size ({dx},{dy},{dz}): {e}")
-        return np.array(data)
+        data = self.client.get("/blocks", {
+            "x": x, "y": y, "z": z,
+            "dx": dx, "dy": dy, "dz": dz,
+        })
+        return np.asarray(data, dtype=object)
