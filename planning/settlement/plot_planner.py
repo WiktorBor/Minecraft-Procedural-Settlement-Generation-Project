@@ -32,6 +32,19 @@ class PlotPlanner:
         self.roads     = frozenset(roads)   # O(1) membership, immutable
         self.config    = config
 
+        # Pre-build a boolean grid of road cells in local index space so that
+        # road-overlap checks in _valid() are a single numpy slice rather than
+        # an O(plot_w * plot_d) Python loop.
+        shape = (analysis.heightmap_ground.shape[0], analysis.heightmap_ground.shape[1])
+        self._road_mask: np.ndarray = np.zeros(shape, dtype=bool)
+        _area = analysis.best_area
+        for cell in self.roads:
+            try:
+                li, lj = _area.world_to_index(cell.x, cell.z)
+                self._road_mask[li, lj] = True
+            except ValueError:
+                pass  # road cell outside best_area — ignore
+
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
@@ -49,7 +62,6 @@ class PlotPlanner:
         All terrain checks are performed on numpy slices — no Python loop
         over individual cells.
         """
-        area  = self.analysis.best_area
         x_end = local_x + plot_w
         z_end = local_z + plot_d
 
@@ -77,13 +89,12 @@ class PlotPlanner:
             logger.debug("  rejected: height_var %.2f > %d", float(heights.max() - heights.min()), self.config.max_height_variation)
             return False
 
-        # Road overlap
-        wx0, wz0 = area.index_to_world(local_x, local_z)
-        for dx in range(plot_w):
-            for dz in range(plot_d):
-                if RoadCell(wx0 + dx, wz0 + dz) in self.roads:
-                    logger.debug("  rejected: road overlap at (%d, %d)", wx0+dx, wz0+dz)
-                    return False
+        # Road overlap — use pre-built boolean mask (O(1) slice) instead of
+        # a Python double-loop over every cell in the footprint (was O(w*d)).
+        if self._road_mask is not None:
+            if self._road_mask[local_x:x_end, local_z:z_end].any():
+                logger.debug("  rejected: road overlap at local (%d, %d)", local_x, local_z)
+                return False
 
         return True
 
