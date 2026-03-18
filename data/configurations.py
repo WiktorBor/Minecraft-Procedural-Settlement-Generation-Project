@@ -34,9 +34,9 @@ class SettlementConfig:
     min_plot_cluster_distance: int   = 6
     max_plot_cluster_distance: int   = 18
     min_water_distance:        int   = 3
-    max_height_variation:      int   = 2
-    max_slope:                 float = 0.6
-    max_roughness:             float = 2.0
+    max_height_variation:      int   = 4   # raised: allow gentle slopes within a plot
+    max_slope:                 float = 2.0 # raised: np.gradient slope, 0.6 was near-flat only
+    max_roughness:             float = 6.0 # raised: local height range within radius
     num_districts:             int   = 5
     road_width:                int   = 3
     radius:                    int   = 6
@@ -46,8 +46,8 @@ class SettlementConfig:
     district_type_rules: dict[str, DistrictRule] = field(
         default_factory=lambda: {
             "fishing":     {"water_dist_max": 10},
-            "farming":     {"slope_max": 1.5, "roughness_max": 1.5, "probability": 0.6},
-            "residential": {"slope_max": 0.8, "roughness_max": 1.0, "probability": 0.7},
+            "farming":     {"slope_max": 3.0, "roughness_max": 8.0, "probability": 0.6},
+            "residential": {"slope_max": 2.5, "roughness_max": 6.0, "probability": 0.7},
             "forest":      {},
         }
     )
@@ -77,6 +77,20 @@ class SettlementConfig:
             "fishing":     5,
         }
     )
+
+    # Target structure-type ratios (best-effort, not guaranteed).
+    # If no water access, fishing share is redistributed equally to others.
+    ratio_residential:  float = 0.60
+    ratio_functional:   float = 0.20
+    ratio_fishing:      float = 0.10
+    ratio_decoration:   float = 0.10
+
+    # Fortification settings
+    tower_height:       int   = 8    # height of corner towers (above ground)
+    tower_width:        int   = 5    # footprint (square) of corner towers
+    wall_height:        int   = 5    # height of connecting crenellated walls
+    wall_thickness:     int   = 2    # wall block thickness
+    gate_width:         int   = 4    # opening width of the settlement gate
 
 
 # ---------------------------------------------------------------------------

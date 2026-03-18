@@ -1,8 +1,10 @@
-"""Generates varied residential buildings."""
+"""
+Residential building builder — delegates to HouseGrammar for all block placement.
+
+Keeps the same public interface as before (HouseBuilder.build(plot)) so
+nothing in settlement_generator.py needs to change.
+"""
 from __future__ import annotations
-
-
-import random
 
 from gdpc.editor import Editor
 
@@ -11,20 +13,18 @@ from data.analysis_results import WorldAnalysisResult
 from data.configurations import TerrainConfig
 from data.settlement_entities import Plot
 from data.biome_palettes import BiomePalette, get_biome_palette
-from .components import (
-    build_floor,
-    build_walls,
-    build_gabled_roof,
-    build_flat_roof,
-    add_windows,
-    add_door,
-    add_chimney,
-)
-
-_WALL_HEIGHT = 5  # default wall height in blocks
+from .house_grammar import HouseGrammar
 
 
 class HouseBuilder:
+    """
+    Thin wrapper that clears vegetation then delegates to HouseGrammar.
+
+    HouseGrammar contains all shape-grammar logic: foundation, body,
+    half-timbered upper storey, facade with door surround and shutters,
+    roof variants (gabled/steep/cross-gabled), chimney, lean-to extension,
+    and decorative details (lanterns, barrels, porch posts).
+    """
 
     def __init__(
         self,
@@ -37,41 +37,20 @@ class HouseBuilder:
         self.analysis       = analysis
         self.terrain_config = terrain_config
         self.palette        = palette if palette is not None else get_biome_palette()
+        self._grammar       = HouseGrammar(editor, self.palette)
 
-    def build_house(self, plot: Plot, decisions: dict) -> None:
+    def build(self, plot: Plot, rotation: int = 0) -> None:
         """
-        Build a house at the given plot using the provided decisions.
-
-        Wraps all block placements in a buffer so the entire house is
-        sent to the server in a single HTTP request.
+        Clear vegetation around the plot then build via HouseGrammar.
 
         Args:
-            plot: The plot to build on.
-            decisions: dict from HouseAgent.decide(); must have 'build' key.
+            plot:     The plot to build on.
+            rotation: Rotation in degrees (0, 90, 180, 270).
         """
-        if not decisions.get("build", True):
-            return
-
-        x, z        = plot.x, plot.z
-        y           = plot.y
-        w, d        = plot.width, plot.depth
-        wall_height = _WALL_HEIGHT
-        roof_y      = y + wall_height
-
         clear_area(
             editor=self.editor,
             analysis=self.analysis,
             plot=plot,
             config=self.terrain_config,
         )
-
-        # Placements are batched via Editor(buffering=True) set in main.py
-        build_floor(self.editor, x, y, z, w, d, self.palette["floor"])
-        build_walls(self.editor, x, y, z, w, wall_height, d, self.palette["wall"])
-        build_gabled_roof(
-            self.editor, x, roof_y, z, w, d,
-            material=self.palette["roof"],
-        )
-        add_windows(self.editor, x, y, z, w, d, "minecraft:glass_pane")
-        add_door(self.editor, x, y, z, w, "minecraft:oak_door")
-        add_chimney(self.editor, x, y + 1, z, w, d, wall_height + 3, self.palette["foundation"])
+        self._grammar.build(plot, rotation=rotation)

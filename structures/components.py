@@ -1,5 +1,8 @@
 """
-Primitive building-block functions for house construction.
+Shared primitive building-block functions for all structure builders.
+
+Lives at structures/components.py so any structure (house, tower, farm, etc.)
+can import from here without coupling to the house subpackage.
 
 All functions use placeBlock with an iterable of positions where possible,
 which GDPC batches into a single HTTP request internally (see Editor.placeBlockGlobal).
