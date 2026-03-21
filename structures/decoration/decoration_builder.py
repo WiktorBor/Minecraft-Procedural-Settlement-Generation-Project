@@ -8,6 +8,7 @@ from gdpc.editor import Editor
 import gdpc.geometry as geo
 
 from data.biome_palettes import BiomePalette, palette_get
+from structures.components import place_light
 from data.settlement_entities import Plot
 
 logger = logging.getLogger(__name__)
@@ -62,10 +63,7 @@ class DecorationBuilder:
         self.editor.placeBlock((x + 1, y + 3, z + 2), Block(acc))
 
         # Hanging lantern
-        self.editor.placeBlock(
-            (x + 1, y + 3, z + 1),
-            Block(light, {"hanging": "true"}),
-        )
+        place_light(self.editor, (x + 1, y + 3, z + 1), light, hanging=True)
         logger.debug("Well built at (%d, %d, %d).", x, y, z)
 
     # ------------------------------------------------------------------

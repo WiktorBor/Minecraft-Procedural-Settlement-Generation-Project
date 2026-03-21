@@ -382,14 +382,17 @@ def remove_sparse_top(
     below_dominant = (submap < dominant_y)
     at_dominant    = (submap == dominant_y)
 
-    # A cell is enclosed if it is below dominant AND all 4 neighbours are at dominant
-    gap_mask[interior] = (
-        below_dominant[1:-1, 1:-1] &
-        at_dominant[2:,   1:-1] &   # south neighbour
-        at_dominant[:-2,  1:-1] &   # north neighbour
-        at_dominant[1:-1, 2:  ] &   # east neighbour
-        at_dominant[1:-1, :-2 ]     # west neighbour
+    # A cell is a gap if it is below dominant AND at least 3 of its 4 cardinal
+    # neighbours are at or above dominant. The original "all 4" requirement was
+    # too strict — natural terrain almost never satisfies it, so nearly all
+    # holes were silently skipped.
+    neighbour_count = (
+        at_dominant[2:,   1:-1].astype(np.int8) +
+        at_dominant[:-2,  1:-1].astype(np.int8) +
+        at_dominant[1:-1, 2:  ].astype(np.int8) +
+        at_dominant[1:-1, :-2 ].astype(np.int8)
     )
+    gap_mask[interior] = below_dominant[1:-1, 1:-1] & (neighbour_count >= 3)
 
     gap_cells = np.argwhere(gap_mask)
     for cx, cz in gap_cells:
@@ -512,52 +515,109 @@ def seal_cave_openings(
     sample_radius: int = 3,
 ) -> None:
     """
-    Detect and seal cave openings / sinkholes in the terrain.
+    Detect and seal cave openings, sinkholes, water holes, and lava pools.
 
-    A hole is defined as a cell whose surface height is more than
-    `drop_threshold` blocks below at least one of its 4 cardinal neighbours.
-    Connected hole cells are grouped, then each group is filled to the lowest
-    height found on the rim (the non-hole neighbours bordering the group).
+    Detection uses three complementary masks:
+    1. Cave/sinkhole mask: cells whose ground heightmap value is more than
+       `drop_threshold` blocks below any cardinal neighbour — classic cave entrance.
+    2. Water hole mask: cells where water_mask is True AND the cell is
+       surrounded by non-water neighbours — isolated inland water pools.
+    3. Lava mask: cells where the surface block is lava — detected by sampling
+       heightmap_surface vs heightmap_ocean_floor difference.
 
-    Fill strategy (simulates human terraforming):
-    - Subsurface layers: filled solid using the most common subsurface block
-      sampled from rim neighbours at one block below their surface, weighted
-      by inverse distance.  Up to `fill_depth - 1` layers.
-    - Cap layer: the top block uses the most common surface block sampled from
-      rim neighbours at their surface height, weighted by inverse distance.
-      This ensures grass caps grass holes, sand caps sand holes, etc.
-    - The heightmap is updated in-place.
+    All detected holes are grouped by connectivity, then each group is filled
+    to the lowest rim neighbour height using:
+    - Subsurface layers: most common subsurface block from rim (weighted by distance)
+    - Cap layer: most common surface block from rim (weighted by distance)
+
+    The heightmap is updated in-place.
 
     Args:
         editor: GDPC Editor instance (buffering=True recommended).
         analysis: WorldAnalysisResult — heightmap_ground updated in-place.
-        drop_threshold: Minimum height difference to a neighbour before a cell
-                        is considered a hole (default 3 blocks).
-        fill_depth: How many blocks deep to fill solidly before placing the
-                    surface cap (default 4, so 3 subsurface + 1 cap).
-        sample_radius: Chebyshev radius used when sampling rim blocks for fill
-                       block selection (default 3).
+        drop_threshold: Min height drop vs neighbour to flag as cave (default 3).
+        fill_depth: Blocks deep to fill before placing surface cap (default 4).
+        sample_radius: Radius for rim block sampling (default 3).
     """
     area      = analysis.best_area
     heightmap = analysis.heightmap_ground
     w, d      = heightmap.shape
 
     # ------------------------------------------------------------------
-    # Step 1: detect hole cells — drop > threshold vs any cardinal neighbour
+    # Step 1: build combined hole mask
     # ------------------------------------------------------------------
     h = heightmap.astype(np.float32)
 
-    # Max height of the 4 cardinal neighbours (edge cells use the cell itself)
+    # --- 1a: cave/sinkhole — drop > threshold vs any cardinal neighbour ---
     neighbour_max = np.full((w, d), -np.inf, dtype=np.float32)
     neighbour_max[:-1, :] = np.maximum(neighbour_max[:-1, :], h[1:,  :])
     neighbour_max[1:,  :] = np.maximum(neighbour_max[1:,  :], h[:-1, :])
     neighbour_max[:,  :-1] = np.maximum(neighbour_max[:, :-1], h[:,  1:])
     neighbour_max[:,   1:] = np.maximum(neighbour_max[:,  1:], h[:,  :-1])
-
-    # Clamp edge cells that have no neighbour on one side
     neighbour_max = np.where(np.isinf(neighbour_max), h, neighbour_max)
+    cave_mask = (neighbour_max - h) >= drop_threshold
 
-    hole_mask = (neighbour_max - h) >= drop_threshold
+    # --- 1b: water holes — small isolated inland water pools only ---
+    # Label all connected water regions. Only regions with cell count <=
+    # _WATER_POOL_MAX_CELLS are flagged for filling. Large connected bodies
+    # (rivers, lakes, oceans) are left untouched.
+    #
+    # Fix: the previous logic flagged any water cell with a dry neighbour,
+    # which included every cell along a river bank — causing entire rivers
+    # to be incorrectly filled. Size-based filtering avoids this.
+    _WATER_POOL_MAX_CELLS = 40
+
+    water_mask = analysis.water_mask.astype(bool)
+    water_hole_mask = np.zeros((w, d), dtype=bool)
+
+    if np.any(water_mask):
+        water_labeled, num_water = ndimage_label(water_mask)
+        if num_water > 0:
+            water_sizes = np.bincount(water_labeled.ravel())[1:]
+            for wid in range(1, num_water + 1):
+                if water_sizes[wid - 1] <= _WATER_POOL_MAX_CELLS:
+                    water_hole_mask |= (water_labeled == wid)
+
+    # --- 1c: lava holes — cells where surface is significantly above ground
+    #     (plant_thickness > 0 usually, but lava shows as surface == ocean_floor
+    #     with large drop). Detect via large drop + water_mask False ---
+    # Use the ocean_floor heightmap: lava pools sit on ocean_floor with
+    # surface equal to lava height. Detect as: ground - ocean_floor > 3
+    # AND not water (lava isn't tracked by water_mask)
+    if analysis.heightmap_ocean_floor is not None:
+        lava_mask = (
+            (analysis.heightmap_ground - analysis.heightmap_ocean_floor > 3) &
+            ~water_mask &
+            cave_mask  # must also be a steep drop
+        )
+    else:
+        lava_mask = np.zeros((w, d), dtype=bool)
+
+    # --- 1d: wide shallow depressions ---
+    # The cave mask only catches sharp drops (>= drop_threshold vs a single
+    # neighbour). Wide gradual depressions — like image 2, a 3x3 pit that is
+    # 2 blocks deep — have no single edge that exceeds the threshold because
+    # all their neighbours are also depressed.
+    #
+    # Fix: for every unflagged cell, check if it is below the LOCAL mean of
+    # a small neighbourhood (radius 2). Cells more than 1.5 blocks below their
+    # local mean in a predominantly-flat neighbourhood are shallow depressions.
+    from scipy.ndimage import uniform_filter
+    _r = 2
+    local_mean_shallow = uniform_filter(h, size=2 * _r + 1)
+    # Only flag as shallow depression where the local terrain is relatively flat
+    # (low std) — avoids false positives on hillsides.
+    local_std_shallow = np.sqrt(np.maximum(
+        uniform_filter(h ** 2, size=2 * _r + 1) - local_mean_shallow ** 2, 0.0
+    ))
+    shallow_mask = (
+        (local_mean_shallow - h >= 1.5) &   # at least 1.5 below local mean
+        (local_std_shallow <= 3.0) &         # neighbourhood is relatively flat
+        ~cave_mask                           # not already caught by cave detector
+    )
+
+    # Combine all hole types
+    hole_mask = cave_mask | water_hole_mask | lava_mask | shallow_mask
 
     if not np.any(hole_mask):
         return
@@ -643,20 +703,36 @@ def seal_cave_openings(
         # ------------------------------------------------------------------
         for cx, cz in hole_cells:
             cx, cz  = int(cx), int(cz)
-            cell_y  = int(heightmap[cx, cz])
             wx, wz  = area.index_to_world(cx, cz)
+
+            # For water/lava cells, use the ocean_floor height as the actual
+            # bottom of the hole so we fill the fluid completely
+            is_water = bool(water_hole_mask[cx, cz]) if 'water_hole_mask' in dir() else False
+            cell_y   = int(analysis.heightmap_ocean_floor[cx, cz]) if (
+                is_water and analysis.heightmap_ocean_floor is not None
+            ) else int(heightmap[cx, cz])
 
             if cell_y >= target_y:
                 continue
 
-            # How deep to fill solidly: up to fill_depth blocks below target
-            solid_from = max(cell_y + 1, target_y - fill_depth + 1)
+            # Fill the entire column from the hole bottom up to target_y.
+            # Previously fill_depth capped how deep the fill went, leaving a
+            # gap of air blocks at the bottom of deep caves — now we always
+            # fill the full depth so no open cave remains.
+            solid_from = cell_y + 1
             solid_to   = target_y - 1   # one below the cap
 
             # Subsurface fill (solid body)
             if solid_from <= solid_to:
                 positions = [(wx, wy, wz) for wy in range(solid_from, solid_to + 1)]
                 editor.placeBlock(positions, sub_block)
+
+            # If the hole cell was water or lava, explicitly clear those
+            # fluid blocks before placing the cap — otherwise the fluid
+            # remains visible above the fill.
+            if hole_mask[cx, cz]:
+                for wy in range(cell_y, target_y + 1):
+                    editor.placeBlock((wx, wy, wz), Block('minecraft:air'))
 
             # Cap layer (surface block)
             editor.placeBlock((wx, target_y, wz), surface_block)

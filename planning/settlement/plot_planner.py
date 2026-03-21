@@ -201,10 +201,23 @@ class PlotPlanner:
                 plot_centers.append((cx, cz))
 
                 wx, wz = self.analysis.best_area.index_to_world(local_x, local_z)
+
+                # Use the maximum height across the entire plot footprint as
+                # the base Y. Using the corner height (single cell) caused
+                # houses to be placed at a lower Y than the terrain under
+                # most of the plot, burying the structure in the ground.
+                # Builders use foundation blocks to fill downward from this
+                # height to meet lower terrain cells.
+                plot_heights = self.analysis.heightmap_ground[
+                    local_x:local_x + plot_w,
+                    local_z:local_z + plot_d,
+                ]
+                plot_y = int(plot_heights.max())
+
                 plots.append(Plot(
                     x=wx,
                     z=wz,
-                    y=int(self.analysis.heightmap_ground[local_x, local_z]),
+                    y=plot_y,
                     width=plot_w,
                     depth=plot_d,
                     type=dtype,
