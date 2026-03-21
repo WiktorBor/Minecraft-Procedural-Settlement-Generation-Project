@@ -1,52 +1,83 @@
 from __future__ import annotations
 
 import numpy as np
+from gdpc import Block
 from gdpc.editor import Editor
-from data.build_area import BuildArea
+from scipy.ndimage import uniform_filter
+
+from data.analysis_results import WorldAnalysisResult
 
 
-def terraform_area_real_time(
+def terraform_area(
     editor: Editor,
-    heightmap: np.ndarray,
-    best_area: BuildArea,
-    parent_area: BuildArea,
-    max_height_change: float = 0.5,
+    analysis: WorldAnalysisResult,
+    passes: int = 3,
+    smooth_radius: int = 3,
+    max_change_per_pass: float = 1.0,
     block_type: str = "minecraft:dirt",
 ) -> None:
     """
-    Smooth small height variations within best_area by editing blocks in the world.
+    Smooth terrain bumps within best_area using iterative neighbourhood
+    averaging, producing natural slopes rather than hard flat cuts.
 
-    Computes a median target height for the area, clamps per-cell adjustments
-    to `max_height_change`, then places fill blocks where the terrain is raised.
+    Holes and caves are intentionally left untouched — call
+    seal_cave_openings() AFTER this function to fill those flat and flush
+    with the surrounding ground. Separating the two concerns avoids the
+    smoother nudging freshly-filled cells back down.
+
+    Only downward smoothing is applied here (bumps are shaved). Cells
+    below the local mean are never raised — that is hole-filling territory
+    and belongs to seal_cave_openings.
+
+    Algorithm
+    ---------
+    Each pass:
+      1. Compute the neighbourhood mean via uniform filter.
+      2. For cells ABOVE the mean: move them down by up to max_change_per_pass.
+      3. For cells BELOW the mean: leave them alone (hole-filling is separate).
 
     Args:
-        editor: GDPC Editor instance (use in buffered mode for performance).
-        heightmap: 2-D float32 array of terrain heights indexed to parent_area.
-        best_area: The sub-area to terraform (world coordinates).
-        parent_area: The parent BuildArea that heightmap is indexed against.
-        max_height_change: Maximum height adjustment per cell (blocks).
-        block_type: Block ID to use for fill (default: minecraft:dirt).
+        editor:              GDPC Editor instance (buffered mode recommended).
+        analysis:            WorldAnalysisResult — heightmap_ground updated in-place.
+        passes:              Number of smoothing iterations (default 3).
+        smooth_radius:       Neighbourhood radius for each pass (default 3).
+        max_change_per_pass: Max height reduction per cell per pass (default 1.0).
+        block_type:          Unused here (kept for API consistency). Removal of
+                             blocks uses minecraft:air.
 
-    Note
-    ----
-    Call this inside an `editor.pushBuffer()` / `editor.popBuffer()` block to
-    batch all placements into a single HTTP request rather than one per cell.
+    Call order in settlement_generator.py Phase 2:
+        terraform_area_real_time(...)   # smooth bumps with slopes
+        seal_cave_openings(...)         # fill holes flat and flush
     """
-    ix_from, iz_from = parent_area.world_to_index(best_area.x_from, best_area.z_from)
-    ix_to,   iz_to   = parent_area.world_to_index(best_area.x_to,   best_area.z_to)
+    area      = analysis.best_area
+    heightmap = analysis.heightmap_ground.astype(np.float32)
+    w, d      = heightmap.shape
+    size      = 2 * smooth_radius + 1
 
-    submap = heightmap[ix_from:ix_to + 1, iz_from:iz_to + 1]
+    for _ in range(passes):
+        local_mean = uniform_filter(heightmap, size=size, mode="nearest")
 
-    target_height = int(np.round(np.median(submap)))
-    diff          = np.clip(target_height - submap, -max_height_change, max_height_change)
-    new_heights   = (submap + diff).astype(np.float32)
+        # Only shave downward — never fill upward here.
+        # clip so delta is in [-max_change_per_pass, 0]
+        delta     = np.clip(local_mean - heightmap, -max_change_per_pass, 0.0)
+        heightmap = heightmap + delta
 
-    # Write smoothed heights back into the parent heightmap
-    heightmap[ix_from:ix_to + 1, iz_from:iz_to + 1] = new_heights
+    new_heights = np.round(heightmap).astype(np.int32)
+    old_heights = analysis.heightmap_ground.astype(np.int32)
 
-    # Place blocks where the terrain needs to be raised (diff > 0)
-    for i in range(new_heights.shape[0]):
-        for j in range(new_heights.shape[1]):
-            x, z = best_area.index_to_world(i, j)
-            y    = int(new_heights[i, j])
-            editor.placeBlock((x, y, z), block_type)
+    for i in range(w):
+        for j in range(d):
+            original_y = int(old_heights[i, j])
+            new_y      = int(new_heights[i, j])
+
+            if new_y >= original_y:
+                continue  # no change or rounding kept same height
+
+            x, z = area.index_to_world(i, j)
+
+            # Remove blocks from new_y+1 up to original surface
+            for y in range(new_y + 1, original_y + 1):
+                editor.placeBlock((x, y, z), Block("minecraft:air"))
+
+    # Update heightmap so seal_cave_openings and plot planner see correct heights
+    analysis.heightmap_ground[:, :] = new_heights

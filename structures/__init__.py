@@ -9,7 +9,7 @@ HouseBuilder – low-level block placement for houses (use directly only if
 """
 
 from .house.house import House
-from .house.house_builder import HouseBuilder
+from .house.house_grammar import HouseGrammar
 from .tower.tower import Tower
 from .tower.tower_builder import TowerBuilder
 from .fortification.fortification_builder import FortificationBuilder
@@ -20,7 +20,7 @@ from .decoration.decoration_builder import DecorationBuilder
 
 __all__ = [
     "House",
-    "HouseBuilder",
+    "HouseGrammar",
     "Tower",
     "TowerBuilder",
     "FortificationBuilder",

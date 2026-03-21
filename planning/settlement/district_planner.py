@@ -10,17 +10,22 @@ from data.analysis_results import WorldAnalysisResult
 from data.configurations import SettlementConfig
 from data.settlement_entities import District, Districts
 from utils.poisson_disk import poisson_disk
+from ai.district_mdp import DistrictMDP, thresholds_from_config
 
 logger = logging.getLogger(__name__)
 
 
 class DistrictPlanner:
     """
-    Voronoi-based district planner.
+    Voronoi-based district planner with MDP-driven type assignment.
 
     Generates district seed points via Poisson-disk sampling weighted by
     terrain quality, builds a Voronoi partition, then assigns each district
-    a type based on its average slope, roughness, and water proximity.
+    a type using a policy learned offline via value iteration on a small
+    terrain-feature MDP (27 states × 4 actions).
+
+    The MDP replaces the previous rule-cascade heuristic in _assign_type.
+    It is solved once at construction time and adds negligible overhead.
     """
 
     def __init__(
@@ -39,6 +44,17 @@ class DistrictPlanner:
             random.seed(seed)
             np.random.seed(seed)
 
+        # --- MDP: solve once at construction, reuse for every district ---
+        # Bin thresholds are derived from SettlementConfig so the MDP shares
+        # the same domain numbers as the rest of the planner — single source
+        # of truth, and straightforward to document in a report.
+        self._mdp = DistrictMDP(gamma=0.9)
+        self._mdp.solve(iterations=200)
+        self._thresholds = thresholds_from_config(config)
+        logger.info("District MDP solved.\n%s", self._mdp.policy_table())
+
+    # ------------------------------------------------------------------
+
     def generate(self) -> Districts:
         """
         Generate districts within the best build area.
@@ -52,8 +68,8 @@ class DistrictPlanner:
         area = self.analysis.best_area
         logger.info("Generating %d districts...", self.num_districts)
 
-        local_slope     = self.analysis.slope_map
-        local_roughness = self.analysis.roughness_map
+        local_slope      = self.analysis.slope_map
+        local_roughness  = self.analysis.roughness_map
         local_water_dist = self.analysis.water_distances
 
         w, d = local_slope.shape
@@ -86,11 +102,11 @@ class DistrictPlanner:
 
         # --- vectorised Voronoi map ---
         xs, zs    = np.meshgrid(np.arange(w), np.arange(d), indexing="ij")
-        grid      = np.stack((xs, zs), axis=-1)                          # (w, d, 2)
-        distances = np.sum((grid[..., None, :] - seeds) ** 2, axis=-1)  # (w, d, N)
+        grid      = np.stack((xs, zs), axis=-1)
+        distances = np.sum((grid[..., None, :] - seeds) ** 2, axis=-1)
         district_map: np.ndarray = np.argmin(distances, axis=-1).astype(np.int32)
 
-        # --- per-district aggregations (fully vectorised) ---
+        # --- per-district aggregations ---
         district_ids   = district_map.ravel()
         n              = self.num_districts
         counts         = np.maximum(np.bincount(district_ids, minlength=n), 1)
@@ -99,7 +115,6 @@ class DistrictPlanner:
         avg_roughness  = np.bincount(district_ids, weights=local_roughness.ravel(),  minlength=n) / counts
         avg_water_dist = np.bincount(district_ids, weights=local_water_dist.ravel(), minlength=n) / counts
 
-        # Bounding boxes via vectorised scatter — avoids np.minimum/maximum.at loops
         xs_flat = xs.ravel().astype(np.int32)
         zs_flat = zs.ravel().astype(np.int32)
 
@@ -113,7 +128,6 @@ class DistrictPlanner:
         np.maximum.at(x_max, district_ids, xs_flat)
         np.maximum.at(z_max, district_ids, zs_flat)
 
-        # Centre of mass per district — computed from per-district sums (no argwhere loop)
         x_sum = np.bincount(district_ids, weights=xs_flat.astype(float), minlength=n) / counts
         z_sum = np.bincount(district_ids, weights=zs_flat.astype(float), minlength=n) / counts
 
@@ -129,18 +143,11 @@ class DistrictPlanner:
             )
             district_types[idx] = dtype
 
-            wx, wz   = area.index_to_world(int(x_min[idx]), int(z_min[idx]))
-            cx, cz   = area.index_to_world(int(x_sum[idx]), int(z_sum[idx]))
-            width    = int(x_max[idx]) - int(x_min[idx]) + 1
-            depth    = int(z_max[idx]) - int(z_min[idx]) + 1
+            wx, wz = area.index_to_world(int(x_min[idx]), int(z_min[idx]))
+            cx, cz = area.index_to_world(int(x_sum[idx]), int(z_sum[idx]))
+            width  = int(x_max[idx]) - int(x_min[idx]) + 1
+            depth  = int(z_max[idx]) - int(z_min[idx]) + 1
 
-            # District inherits x, z, width, depth from RectangularArea;
-            # center_x / center_z are derived properties — no separate center field.
-            d_obj = District(x=wx, z=wz, width=width, depth=depth, type=dtype)
-
-            # Override centre to the computed centroid (not the bounding-box centre)
-            # by adjusting x/z so that center_x == cx and center_z == cz.
-            # Since center_x = x + width/2, we back-calculate x from the centroid.
             d_obj = District(
                 x=int(cx - width / 2),
                 z=int(cz - depth / 2),
@@ -148,7 +155,6 @@ class DistrictPlanner:
                 depth=depth,
                 type=dtype,
             )
-
             district_list.append(d_obj)
 
         return Districts(
@@ -159,6 +165,8 @@ class DistrictPlanner:
             district_list=district_list,
         )
 
+    # ------------------------------------------------------------------
+
     def _assign_type(
         self,
         slope: float,
@@ -166,20 +174,17 @@ class DistrictPlanner:
         water_dist: float,
     ) -> str:
         """
-        Assign a district type from terrain metrics.
+        Assign a district type using the learned MDP policy.
 
-        Rule priority follows the order of keys in config.district_type_rules.
-        'forest' is the default fallback if no rule matches.
+        Bin thresholds are derived once from SettlementConfig in __init__
+        via thresholds_from_config() and cached in self._thresholds.
+
+        This means the MDP state space is anchored to the same slope_max,
+        roughness_max, and water_dist_max values that govern plot placement
+        and road generation — no separate magic numbers to maintain.
+
+        Previously this method used a hand-tuned rule cascade with a random
+        tiebreak. The MDP policy is deterministic, principled, and fully
+        inspectable via self._mdp.policy_table().
         """
-        for candidate, rules in self.config.district_type_rules.items():
-            if candidate == "fishing":
-                if water_dist <= rules.get("water_dist_max", np.inf):
-                    return "fishing"
-
-            elif candidate in ("farming", "residential"):
-                if (slope     <= rules.get("slope_max",     np.inf) and
-                        roughness <= rules.get("roughness_max", np.inf) and
-                        random.random() < rules.get("probability", 0.5)):
-                    return candidate
-
-        return "forest"
+        return self._mdp.act(slope, roughness, water_dist, **self._thresholds)

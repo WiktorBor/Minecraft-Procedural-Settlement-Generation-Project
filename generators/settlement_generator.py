@@ -18,7 +18,8 @@ from structures.farm.farm import Farm
 from structures.decoration.decoration import Decoration
 from structures.fortification.fortification_builder import FortificationBuilder
 from world_interface.road_placer import RoadBuilder
-from world_interface.terrain_clearer import remove_sparse_top, seal_cave_openings
+from world_interface.terrain_clearer import remove_sparse_top, seal_cave_openings, clear_area
+from world_interface.terraforming import terraform_area
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +78,18 @@ class SettlementGenerator:
         )
         logger.info("  ✓ Sparse terrain clusters removed.")
 
+        terraform_area(
+            editor=self.editor,
+            analysis=self.analysis
+        )
+
+        logger.info("  ✓ Terrain smoothed.")
+
         seal_cave_openings(
             editor=self.editor,
             analysis=self.analysis,
         )
+
         logger.info("  ✓ Cave openings sealed.")
 
         # Recompute slope and roughness maps from the cleaned heightmap so the
@@ -125,21 +134,38 @@ class SettlementGenerator:
         # Build structure instances once — shared across all plots of that type
         _palette = self.palette if self.palette is not None else get_biome_palette()
         _structures = {
-            "house":      House(self.editor, self.analysis, self.terrain_config, _palette),
+            "house":      House(self.editor, self.analysis, self.terrain_config, _palette, roads=state.roads),
             "tower":      Tower(self.editor, self.analysis, self.terrain_config, _palette),
             "farm":       Farm(self.editor, self.analysis, self.terrain_config, _palette),
             "decoration": Decoration(self.editor, self.analysis, self.terrain_config, _palette),
         }
 
+        # Track placed building footprints for overlap checking
+        placed_footprints: list[tuple[int, int, int, int]] = []  # (x, z, x2, z2)
+
         for idx, plot in enumerate(plots_to_build, 1):
-            structure_type = self._select_structure_type(
-                plot, state, has_water
+            # Explicit overlap check against already-placed buildings
+            px1, pz1 = plot.x, plot.z
+            px2, pz2 = plot.x + plot.width - 1, plot.z + plot.depth - 1
+            overlap = any(
+                px1 <= fx2 and px2 >= fx1 and pz1 <= fz2 and pz2 >= fz1
+                for fx1, fz1, fx2, fz2 in placed_footprints
             )
+            if overlap:
+                logger.warning(
+                    "  Skipping plot at (%d, %d) — overlaps with existing building.",
+                    plot.x, plot.z,
+                )
+                continue
+
+            structure_type = self._select_structure_type(plot, state, has_water)
             logger.info(
                 "  Building %d/%d: %s at (%d, %d).",
                 idx, len(plots_to_build), structure_type, plot.x, plot.z,
             )
+            clear_area(self.editor, self.analysis, plot, self.terrain_config)
             _structures[structure_type].build(plot)
+            placed_footprints.append((px1, pz1, px2, pz2))
             state.add_building(Building(
                 x=plot.x, z=plot.z,
                 width=plot.width, depth=plot.depth,
@@ -156,7 +182,7 @@ class SettlementGenerator:
             palette=_palette,
             config=self.settlement_config,
         )
-        fortification.build(buildings=state.buildings)
+        fortification.build()
         logger.info("  ✓ Fortification placed.")
 
         # --- Phase 7: Flush ---
@@ -240,6 +266,6 @@ class SettlementGenerator:
         elif roll < r_res + r_func:
             return "tower"
         elif roll < r_res + r_func + r_fish:
-            return "fishing"
+            return "house"   # fishing placeholder
         else:
             return "decoration"
