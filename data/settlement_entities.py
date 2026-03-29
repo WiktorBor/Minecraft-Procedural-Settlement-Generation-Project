@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
 import numpy as np
 from scipy.spatial import Voronoi
 
 
 # ---------------------------------------------------------------------------
-# Protocol — shared spatial interface (compatible with HasBounds in geometry.py)
+# Shared spatial base
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -15,8 +16,7 @@ class RectangularArea:
     Base for any axis-aligned rectangular entity in world XZ coordinates.
 
     Exposes x_from/x_to/z_from/z_to so all subclasses satisfy the
-    HasBounds protocol defined in utils/geometry.py, enabling use of
-    center_distance(), areas_overlap(), and area_contains_point().
+    HasBounds protocol defined in utils/geometry.py.
     """
     x:     int   # min-X corner (world coordinate)
     z:     int   # min-Z corner (world coordinate)
@@ -41,10 +41,12 @@ class RectangularArea:
 
     @property
     def center_x(self) -> float:
+        """World X coordinate of the centre of this area."""
         return self.x + self.width / 2
 
     @property
     def center_z(self) -> float:
+        """World Z coordinate of the centre of this area."""
         return self.z + self.depth / 2
 
 
@@ -55,12 +57,13 @@ class RectangularArea:
 @dataclass
 class Plot(RectangularArea):
     """
-    A rectangular plot in world coordinates.
+    A rectangular building plot in world coordinates.
 
-    The (x, z) corner is the minimum-X, minimum-Z point of the plot.
-    `y` is the ground level (used for vertical placement).
+    (x, z) is the minimum-X, minimum-Z corner.
+    y is the ground level used for vertical placement.
+    type matches the district type that owns this plot.
     """
-    y:    int = 0    # ground level (Y world coordinate)
+    y:    int = 0
     type: str = ""
 
 
@@ -69,10 +72,10 @@ class Building(RectangularArea):
     """
     A placed building instance in the world.
 
-    Shares the spatial interface with Plot so geometry helpers can operate
+    Shares the spatial interface with Plot so geometry helpers work
     on either without special-casing.
     """
-    y:    int = 0    # ground level (Y world coordinate)
+    y:    int = 0
     type: str = ""
 
 
@@ -82,18 +85,20 @@ class RoadCell:
     A single immutable cell in the road network.
 
     Frozen so instances can be used as dict keys or set members.
+    type defaults to 'main_road' so RoadCell(x, z) works for lookups.
     """
-    x: int
-    z: int
+    x:    int
+    z:    int
+    type: str = "main_road"
 
 
 @dataclass
 class District(RectangularArea):
     """
-    A district region within the settlement, defined by its bounding rectangle.
+    A district region within the settlement defined by its bounding rectangle.
 
-    The centre is derived from corner + dimensions and is never stored
-    separately to avoid the risk of stale values.
+    centre_x / centre_z are inherited from RectangularArea and are always
+    derived from (x, width) and (z, depth) — never stored separately.
     """
     type: str = ""
 
@@ -101,20 +106,20 @@ class District(RectangularArea):
 @dataclass
 class Districts:
     """
-    All district-related data produced by the district planner.
+    All district data produced by the district planner.
 
     Attributes
     ----------
     map : np.ndarray, shape (width, depth), dtype int32
-        Per-cell district index (-1 = unassigned).
+        Per-cell district index. -1 = unassigned.
     types : dict[int, str]
         Maps district index → district type string.
     seeds : np.ndarray, shape (N, 2), dtype float32
-        XZ seed coordinates used to generate the Voronoi diagram.
+        XZ seed coordinates (local index space) used to build the Voronoi.
     voronoi : scipy.spatial.Voronoi
         The Voronoi diagram over the seed points.
     district_list : list[District]
-        Ordered list of District objects (index matches `types` keys).
+        District objects in index order (index matches types keys).
     """
     map:           np.ndarray
     types:         dict[int, str]

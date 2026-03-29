@@ -5,18 +5,18 @@ from typing import TypedDict
 
 
 # ---------------------------------------------------------------------------
-# Typed structures for district rules
+# District rule schema
 # ---------------------------------------------------------------------------
 
 class DistrictRule(TypedDict, total=False):
     """
     Terrain constraints and placement probability for a district type.
-    All keys are optional — missing keys mean "no constraint".
+    All keys are optional — missing keys mean no constraint applies.
     """
-    water_dist_max: float   # maximum distance to water (cells)
-    slope_max:      float   # maximum terrain slope
-    roughness_max:  float   # maximum terrain roughness
-    probability:    float   # relative placement probability [0, 1]
+    water_dist_max: float  # maximum distance to water (cells)
+    slope_max:      float  # maximum terrain slope
+    roughness_max:  float  # maximum terrain roughness
+    probability:    float  # relative placement probability [0, 1]
 
 
 # ---------------------------------------------------------------------------
@@ -27,22 +27,30 @@ class DistrictRule(TypedDict, total=False):
 class SettlementConfig:
     """
     Settlement placement and planning configuration.
-    All distances in blocks / grid cells.
+    All distances in blocks / grid cells unless noted otherwise.
     """
 
+    # Plot spacing
     min_plot_distance:         int   = 6
-    min_plot_cluster_distance: int   = 6
-    max_plot_cluster_distance: int   = 18
-    min_water_distance:        int   = 3
-    max_height_variation:      int   = 4   # raised: allow gentle slopes within a plot
-    max_slope:                 float = 2.0 # raised: np.gradient slope, 0.6 was near-flat only
-    max_roughness:             float = 6.0 # raised: local height range within radius
-    num_districts:             int   = 5
-    road_width:                int   = 3
-    radius:                    int   = 6
+    min_plot_cluster_distance: int   = 4
+    max_plot_cluster_distance: int   = 30
 
-    # District-specific terrain constraints and placement rules.
-    # Use field(default_factory=...) so each instance gets its own dict.
+    # Terrain thresholds for plot validation
+    min_water_distance:  int   = 1
+    max_height_variation: int  = 6
+    max_slope:           float = 5.0
+    max_roughness:       float = 8.0
+
+    # District generation
+    num_districts:               int = 5
+    target_district_size:        int = 1000  # target cells per district
+    min_structures_per_district: int = 2
+
+    # Road
+    road_width: int = 3
+    radius:     int = 6
+
+    # Per-district terrain rules
     district_type_rules: dict[str, DistrictRule] = field(
         default_factory=lambda: {
             "fishing":     {"water_dist_max": 10},
@@ -52,45 +60,44 @@ class SettlementConfig:
         }
     )
 
-    # Plot dimensions per district type (width and depth in blocks).
-    # Separated in case non-square plots are needed in future.
+    # Plot dimensions per district type (blocks)
     plot_width: dict[str, int] = field(
         default_factory=lambda: {
             "residential": 8,
             "farming":     12,
             "fishing":     6,
+            "forest":      8,
         }
     )
-
     plot_depth: dict[str, int] = field(
         default_factory=lambda: {
             "residential": 8,
             "farming":     12,
             "fishing":     6,
+            "forest":      8,
         }
     )
-
     min_plot_size: dict[str, int] = field(
         default_factory=lambda: {
             "residential": 6,
             "farming":     10,
             "fishing":     5,
+            "forest":      6,
         }
     )
 
-    # Target structure-type ratios (best-effort, not guaranteed).
-    # If no water access, fishing share is redistributed equally to others.
-    ratio_residential:  float = 0.60
-    ratio_functional:   float = 0.20
-    ratio_fishing:      float = 0.10
-    ratio_decoration:   float = 0.10
+    # Structure-type ratios (best-effort; fishing redistributed if no water)
+    ratio_residential: float = 0.60
+    ratio_functional:  float = 0.20
+    ratio_fishing:     float = 0.10
+    ratio_decoration:  float = 0.10
 
-    # Fortification settings
-    tower_height:       int   = 8    # height of corner towers (above ground)
-    tower_width:        int   = 5    # footprint (square) of corner towers
-    wall_height:        int   = 5    # height of connecting crenellated walls
-    wall_thickness:     int   = 2    # wall block thickness
-    gate_width:         int   = 4    # opening width of the settlement gate
+    # Fortification
+    tower_height:    int = 8   # height of corner towers above ground
+    tower_width:     int = 5   # square footprint of corner towers
+    wall_height:     int = 5   # height of crenellated walls
+    wall_thickness:  int = 2   # wall block depth
+    gate_width:      int = 4   # gate opening width
 
 
 # ---------------------------------------------------------------------------
@@ -103,38 +110,28 @@ class TerrainConfig:
     Terrain analysis and procedural generation configuration.
     """
 
-    # Blocks ignored when detecting the surface layer.
+    # Substrings matched against block IDs to skip non-solid surface blocks
     surface_ignore_blocks: list[str] = field(default_factory=lambda: [
-        "air",
-        "_leaves",
-        "_log",
-        "_wood",
-        "grass",
-        "flower",
-        "water",
-        "kelp",
-        "seagrass",
-        "tall_seagrass",
-        "vine",
+        "air", "_leaves", "_log", "_wood",
+        "grass", "flower", "water",
+        "kelp", "seagrass", "tall_seagrass", "vine",
     ])
 
-    surface_scan_depth:           int   = 32
-    chunk_size:                   int   = 32
-    forest_scale:                 float = 5.0
-    slope_scale:                  float = 3.0
-    radius:                       int   = 5
-    max_slope:                    float = 0.6
-    max_roughness:                float = 2.0
-    min_patch_size:               int   = 150
+    surface_scan_depth:            int   = 32
+    chunk_size:                    int   = 32
+    forest_scale:                  float = 5.0
+    slope_scale:                   float = 3.0
+    radius:                        int   = 5
+    max_slope:                     float = 0.6
+    max_roughness:                 float = 2.0
+    min_patch_size:                int   = 150
     top_building_score_percentile: float = 0.25
 
-    # Minimum dimensions (in blocks) for the selected best area.
-    # PatchSelector expands the bounding box to meet these if the
-    # natural best patch is smaller.
-    min_best_area_width:  int = 64
-    min_best_area_depth:  int = 64
+    # Minimum best-area dimensions — PatchSelector expands to meet these
+    min_best_area_width: int = 64
+    min_best_area_depth: int = 64
 
-    # Biome suitability weights for placement scoring [0, 1].
+    # Biome suitability weights [0, 1] for placement scoring
     biome_weights: dict[str, float] = field(default_factory=lambda: {
         "minecraft:plains":  1.0,
         "minecraft:forest":  0.8,
@@ -144,15 +141,8 @@ class TerrainConfig:
         "minecraft:ocean":   0.0,
     })
 
-    # Block name substrings used to detect vegetation during analysis.
+    # Block name substrings used to detect vegetation during analysis
     vegetation_block_keywords: list[str] = field(default_factory=lambda: [
-        "log",
-        "leaves",
-        "vine",
-        "sapling",
-        "bamboo",
-        "grass",
-        "fern",
-        "flower",
-        "mushroom",
+        "log", "leaves", "vine", "sapling",
+        "bamboo", "grass", "fern", "flower", "mushroom",
     ])
