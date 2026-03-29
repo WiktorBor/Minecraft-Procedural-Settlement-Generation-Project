@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from structures.base.structure import Structure
-from .house.house import House
-from .tower.tower import Tower
-from .farm.farm import Farm
-from .decoration.decoration import Decoration
+from ..house.house import House
+from ..tower.tower import Tower
+from ..farm.farm import Farm
+from ..decoration.decoration import Decoration
 
 __all__ = ["STRUCTURES", "get_structure"]
 

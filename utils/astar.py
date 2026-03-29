@@ -1,12 +1,11 @@
 """
 A* pathfinding on a 2D grid with height step constraint.
-Paths only move between cells where the height difference is at most 1 block.
+Paths only move between cells where the height difference is at most
+`height_step_max` blocks.
 """
 from __future__ import annotations
 
-
 import heapq
-from typing import Optional
 
 import numpy as np
 
@@ -20,22 +19,35 @@ def find_path(
     heightmap: np.ndarray,
     start: tuple[int, int],
     goal: tuple[int, int],
-    height_step_max: int = 1,
+    height_step_max: int = 2,
     height_cost: float = 0.2,
-) -> Optional[list[tuple[int, int]]]:
+    costs: np.ndarray | None = None,
+) -> list[tuple[int, int]] | None:
     """
     Find a path from start to goal using A* on a 2D grid.
 
-    Args:
-        walkable_2d: Boolean 2D array (True = can walk). Shape (width, depth).
-        heightmap: 2D array of ground height, same shape as walkable_2d.
-        start: (local_x, local_z) start cell indices.
-        goal: (local_x, local_z) goal cell indices.
-        height_step_max: Maximum allowed height difference between adjacent cells (default 1).
-        height_cost: Extra cost per block of height difference (default 0.2).
+    Parameters
+    ----------
+    walkable_2d : np.ndarray
+        Boolean 2D array (True = can walk). Shape (width, depth).
+    heightmap : np.ndarray
+        2D array of ground height, same shape as walkable_2d.
+    start : (local_x, local_z)
+        Start cell indices.
+    goal : (local_x, local_z)
+        Goal cell indices.
+    height_step_max : int
+        Maximum allowed height difference between adjacent cells (default 2).
+    height_cost : float
+        Extra cost per block of height difference (default 0.2).
+    costs : np.ndarray or None
+        Optional per-cell movement cost array, same shape as walkable_2d.
+        If None, all walkable cells cost 1.0.
 
-    Returns:
-        List of (local_x, local_z) from start to goal (inclusive), or None if no path exists.
+    Returns
+    -------
+    list of (local_x, local_z) from start to goal inclusive, or None if no
+    path exists.
     """
     if walkable_2d.shape != heightmap.shape:
         raise ValueError("walkable_2d and heightmap must have the same shape")
@@ -44,7 +56,7 @@ def find_path(
     goal_x, goal_z = goal
     start_x, start_z = start
 
-    # --- bounds & walkability guards ---
+    # Bounds and walkability guards
     if not (0 <= start_x < h_w and 0 <= start_z < h_d):
         return None
     if not (0 <= goal_x < h_w and 0 <= goal_z < h_d):
@@ -54,8 +66,8 @@ def find_path(
     if not walkable_2d[goal_x, goal_z]:
         return None
 
-    # --- array-backed state (much faster than dicts / sets on large grids) ---
-    # g_score[x, z] = best known cost to reach (x, z); inf = unvisited
+    # Array-backed state — much faster than dicts / sets on large grids.
+    # g_score[x, z] = best known cost to reach (x, z); inf = unvisited.
     g_score = np.full((h_w, h_d), np.inf, dtype=np.float32)
     g_score[start_x, start_z] = 0.0
 
@@ -65,14 +77,14 @@ def find_path(
     # closed[x, z] = True once a cell is finalised
     closed = np.zeros((h_w, h_d), dtype=bool)
 
-    # Ensure heightmap values are float32 for fast arithmetic
     heights: np.ndarray = heightmap.astype(np.float32, copy=False)
 
-    # --- open set: (f_score, tie-break counter, x, z) ---
-    # Storing x, z as flat ints avoids tuple allocation overhead in the hot loop
+    # Open set: (f_score, tie-break counter, x, z)
     counter = 0
     h_start = abs(start_x - goal_x) + abs(start_z - goal_z)
-    open_set: list[tuple[float, int, int, int]] = [(float(h_start), 0, start_x, start_z)]
+    open_set: list[tuple[float, int, int, int]] = [
+        (float(h_start), 0, start_x, start_z)
+    ]
 
     while open_set:
         _, _, ix, iz = heapq.heappop(open_set)
@@ -99,7 +111,8 @@ def find_path(
             if height_diff > height_step_max:
                 continue
 
-            tentative_g: float = my_g + 1.0 + height_cost * height_diff
+            cell_cost = float(costs[nx, nz]) if costs is not None else 1.0
+            tentative_g: float = my_g + cell_cost + height_cost * height_diff
 
             if tentative_g < g_score[nx, nz]:
                 g_score[nx, nz] = tentative_g

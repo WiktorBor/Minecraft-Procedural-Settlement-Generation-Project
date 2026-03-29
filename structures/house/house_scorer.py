@@ -46,7 +46,6 @@ import logging
 import pickle
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -54,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 # Default threshold — only build houses scoring at or above this.
 # Can be overridden at construction time.
-DEFAULT_THRESHOLD = 0.55
+DEFAULT_THRESHOLD = 0.65
 
 # Roof type encoding (must match generate_training_data.py)
 ROOF_TYPES = {"gabled": 0, "steep": 1, "cross": 2}
@@ -306,7 +305,7 @@ class HouseScorer:
             if params.w >= 9 and params.d >= 9:
                 s += 0.05
             else:
-                s -= 0.15   # looks wrong on small buildings
+                s -= 0.30   # looks wrong on small buildings
 
         # Steep roof on small cottage looks great
         if params.roof_type == "steep" and params.w <= 7:
@@ -317,8 +316,8 @@ class HouseScorer:
             s -= 0.10
 
         # Very small footprints shouldn't get upper storeys
-        if params.has_upper and (params.w < 7 or params.d < 6):
-            s -= 0.12
+        if params.has_upper and (params.w < 7 or params.d < 7):
+            s -= 0.25
 
         # Extreme aspect ratios
         if params.aspect_ratio > 2.5:
@@ -327,5 +326,15 @@ class HouseScorer:
         # Deep foundation looks more embedded — slight bonus
         if params.foundation_h == 2:
             s += 0.03
+
+        features = sum([
+            params.has_upper,
+            params.has_chimney,
+            params.has_porch,
+            params.has_extension,
+        ])
+
+        if features == 0:
+            s -= 0.20
 
         return float(np.clip(s, 0.0, 1.0))

@@ -4,13 +4,12 @@ import random
 
 from gdpc.editor import Editor
 
+from data.analysis_results import WorldAnalysisResult
+from data.biome_palettes import BiomePalette
+from data.settlement_entities import Plot
 from structures.base.structure import Structure
 from structures.base.structure_agent import StructureAgent
-from data.analysis_results import WorldAnalysisResult
-from data.configurations import TerrainConfig
-from data.biome_palettes import BiomePalette
-from data.settlement_entities import Plot, RoadCell
-from .house_grammar import HouseGrammar
+from structures.house.house_grammar import HouseGrammar
 
 
 class HouseAgent(StructureAgent):
@@ -37,11 +36,10 @@ class House(Structure):
         self,
         editor: Editor,
         analysis: WorldAnalysisResult,
-        terrain_config: TerrainConfig,
         palette: BiomePalette | None = None,
-        roads: frozenset[RoadCell] | None = None,
     ) -> None:
         super().__init__(editor, analysis)
+        self.palette = palette
         self.agent   = HouseAgent(analysis)
         self.grammar = HouseGrammar(editor, palette)
 

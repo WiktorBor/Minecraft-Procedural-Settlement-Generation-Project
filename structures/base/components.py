@@ -12,7 +12,7 @@ system — all placement calls inside a pushTransform() block are automatically
 rotated, so component functions themselves are rotation-unaware.
 
     ctx = BuildContext(editor, palette, rotation=90)
-    with ctx.push():          # applies the rotation transform
+    with ctx.push():
         build_floor(ctx, x, y, z, width, depth)
         build_walls(ctx, x, y, z, width, height, depth)
         build_gabled_roof(ctx, x, y + height, z, width, depth)
@@ -29,7 +29,7 @@ from typing import Generator
 
 from gdpc import Block
 from gdpc.editor import Editor
-from gdpc.transform import Transform
+from gdpc.transform import rotatedBoxTransform
 from gdpc.vector_tools import Box
 
 from data.biome_palettes import BiomePalette, palette_get
@@ -78,12 +78,13 @@ class BuildContext:
               rotation-unaware.
     origin:   (x, y, z) pivot for the rotation transform.
               Set this to the structure's anchor corner before calling push().
+    size:     (width, depth) of structure footprint.
     """
     editor:   Editor
     palette:  BiomePalette
     rotation: int = 0
     origin:   tuple[int, int, int] | None = None
-    size:     tuple[int, int] = (1, 1)   # (width, depth) of structure footprint
+    size:     tuple[int, int] = (1, 1)
 
     @contextmanager
     def push(self) -> Generator[None, None, None]:
@@ -93,25 +94,18 @@ class BuildContext:
         All placeBlock calls made inside this block are automatically rotated.
         On exit the editor's transform is restored to its previous state.
 
-        Example
-        -------
-            with ctx.push():
-                build_floor(ctx, x, y, z, w, d)
-                build_walls(ctx, x, y, z, w, h, d)
+        Component functions pass world-absolute coordinates to placeBlock.
+        A rotatedBoxTransform adds the origin offset as a translation, which
+        would double-offset world coords.  Skip the transform entirely when
+        there is no rotation — world coordinates are already correct.
         """
-        # Always apply transform when origin is set, even for rotation=0.
-        if self.origin is None and self.rotation == 0:
+        if self.rotation == 0:
             yield
             return
 
         steps = (self.rotation // 90) % 4
         ox, oy, oz = self.origin if self.origin else (0, 0, 0)
 
-        # rotatedBoxTransform correctly offsets the anchor point so that
-        # rotation happens around the plot corner regardless of direction.
-        # size.x/z = 1 since we just need the translation anchor, not the full box.
-        from gdpc.transform import rotatedBoxTransform
-        from gdpc.vector_tools import Box
         box       = Box(offset=(ox, oy, oz), size=(self.size[0], 1, self.size[1]))
         transform = rotatedBoxTransform(box, steps)
 
@@ -127,7 +121,12 @@ class BuildContext:
         """Place a single palette block at pos."""
         self.editor.placeBlock(pos, self.block(key, states))
 
-    def place_many(self, positions: list[tuple[int, int, int]], key: str, states: dict | None = None) -> None:
+    def place_many(
+        self,
+        positions: list[tuple[int, int, int]],
+        key: str,
+        states: dict | None = None,
+    ) -> None:
         """Place a palette block at multiple positions in a single call."""
         self.editor.placeBlock(positions, self.block(key, states))
 
@@ -151,12 +150,16 @@ def build_layer(
     ctx.place_many(positions, key)
 
 
-def build_floor(ctx: BuildContext, x: int, y: int, z: int, width: int, depth: int) -> None:
+def build_floor(
+    ctx: BuildContext, x: int, y: int, z: int, width: int, depth: int
+) -> None:
     """Solid floor rectangle using the 'floor' palette key."""
     build_layer(ctx, x, y, z, width, depth, "floor")
 
 
-def build_flat_roof(ctx: BuildContext, x: int, y: int, z: int, width: int, depth: int) -> None:
+def build_flat_roof(
+    ctx: BuildContext, x: int, y: int, z: int, width: int, depth: int
+) -> None:
     """Flat roof rectangle using the 'roof' palette key."""
     build_layer(ctx, x, y, z, width, depth, "roof")
 
@@ -174,11 +177,9 @@ def build_walls(
     """
     positions = []
     for dy in range(1, height):
-        # North/South faces: full width
         for dx in range(width):
             positions.append((x + dx, y + dy, z))
             positions.append((x + dx, y + dy, z + depth - 1))
-        # East/West faces: skip corners already covered above
         for dz in range(1, depth - 1):
             positions.append((x,             y + dy, z + dz))
             positions.append((x + width - 1, y + dy, z + dz))
@@ -222,10 +223,12 @@ def build_gabled_roof(
     rotates them to world space automatically.
     """
     roof_mat  = ctx.palette.get("roof", "minecraft:spruce_stairs")
-    roof_slab = roof_mat.replace("_stairs", "_slab") if roof_mat.endswith("_stairs") else roof_mat
+    roof_slab = (
+        roof_mat.replace("_stairs", "_slab")
+        if roof_mat.endswith("_stairs") else roof_mat
+    )
     peak_height = width // 2
 
-    # Main roof slopes — AI DONT TOUCH THIS FORLOOP AND THE CODE INSIDE IT
     for layer in range(peak_height):
         for dz in range(depth):
             ctx.editor.placeBlock(
@@ -259,9 +262,9 @@ def build_gabled_roof(
     # Gable windows
     window_mat = palette_get(ctx.palette, "window", "minecraft:glass_pane")
     if width >= 3 and peak_height >= 2:
-        wx     = x + width // 2
-        wy     = y + 1
-        slab_y = wy + 1
+        wx        = x + width // 2
+        wy        = y + 1
+        slab_y    = wy + 1
         floor_mat = ctx.palette.get("floor", "minecraft:spruce_planks")
         for face_z in (z, z + depth - 1):
             ctx.editor.placeBlock((wx, wy,     face_z), Block(window_mat))
@@ -324,9 +327,7 @@ def add_chimney(
     width: int, depth: int,
     building_height: int,
 ) -> None:
-    """
-    Chimney at back-right corner using the 'foundation' palette key.
-    """
+    """Chimney at back-right corner using the 'foundation' palette key."""
     chimney_x = x + width  - 2
     chimney_z = z + depth - 2
     positions = [(chimney_x, y + dy, chimney_z) for dy in range(building_height)]

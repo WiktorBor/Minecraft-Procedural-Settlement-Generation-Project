@@ -3,12 +3,11 @@ from __future__ import annotations
 from gdpc.editor import Editor
 
 from data.analysis_results import WorldAnalysisResult
-from data.biome_palettes import BiomePalette
-from data.configurations import TerrainConfig
+from data.biome_palettes import BiomePalette, get_biome_palette
 from data.settlement_entities import Plot
 from structures.base.structure import Structure
 from structures.base.structure_agent import StructureAgent
-from .decoration_builder import DecorationBuilder
+from structures.decoration.decoration_builder import DecorationBuilder
 
 
 class DecorationAgent(StructureAgent):
@@ -31,11 +30,9 @@ class Decoration(Structure):
         self,
         editor: Editor,
         analysis: WorldAnalysisResult,
-        terrain_config: TerrainConfig,
         palette: BiomePalette | None = None,
     ) -> None:
         super().__init__(editor, analysis)
-        from data.biome_palettes import get_biome_palette
         self.agent   = DecorationAgent(analysis)
         self.builder = DecorationBuilder(editor, palette or get_biome_palette("medieval"))
 

@@ -8,7 +8,7 @@ import numpy as np
 
 def poisson_disk(
     width: int,
-    height: int,
+    depth: int,
     radius: float,
     score_map: np.ndarray | None = None,
     seed: int | None = None,
@@ -25,7 +25,7 @@ def poisson_disk(
         Minimum distance between samples.
     score_map : np.ndarray or None
         Terrain preference map [x, z] with values 0..1 (1 = preferable).
-        Must have shape (width, height) or broadcastable equivalent.
+        Must have shape (width, depth) or broadcastable equivalent.
     seed : int or None
         Random seed for reproducibility.
     k : int
@@ -43,12 +43,12 @@ def poisson_disk(
 
     cell_size = radius / math.sqrt(2)
     grid_w = int(width / cell_size) + 1
-    grid_h = int(height / cell_size) + 1
+    grid_d = int(depth / cell_size) + 1
     radius_sq = radius * radius  # hoisted — used in every neighbour check
 
     # numpy grid: stores sample index + 1 at each cell (0 = empty).
     # Using indices avoids storing float tuples and makes lookups cheaper.
-    grid = np.zeros((grid_w, grid_h), dtype=np.int32)
+    grid = np.zeros((grid_w, grid_d), dtype=np.int32)
 
     samples: list[tuple[float, float]] = []
     active: list[tuple[float, float]] = []
@@ -75,7 +75,7 @@ def poisson_disk(
         gx = int(x / cell_size)
         gz = int(z / cell_size)
         x0, x1 = max(gx - 2, 0), min(gx + 3, grid_w)
-        z0, z1 = max(gz - 2, 0), min(gz + 3, grid_h)
+        z0, z1 = max(gz - 2, 0), min(gz + 3, grid_d)
 
         window = grid[x0:x1, z0:z1]          # numpy slice — no Python loop
         occupied = window[window > 0] - 1     # convert to 0-based sample indices
@@ -93,7 +93,7 @@ def poisson_disk(
     # ------------------------------------------------------------------
     while True:
         x = random.uniform(0, width)
-        z = random.uniform(0, height)
+        z = random.uniform(0, depth)
         if random.random() < _terrain_score(x, z):
             break
     _add_sample(x, z)
@@ -113,7 +113,7 @@ def poisson_disk(
         cands_z = pz + np.sin(angles) * dists
 
         for cx, cz in zip(cands_x, cands_z):
-            if not (0 <= cx < width and 0 <= cz < height):
+            if not (0 <= cx < width and 0 <= cz < depth):
                 continue
             if random.random() >= _terrain_score(cx, cz):
                 continue

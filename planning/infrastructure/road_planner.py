@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import logging
+
+import numpy as np
+
+from data.analysis_results import WorldAnalysisResult
+from data.configurations import SettlementConfig
+from data.settlement_entities import Districts, RoadCell
 from utils.astar import find_path
 from utils.mst import mst_edges
-from utils.walkable_grid import build_walkable_grid
 from utils.path_utils import expand_path_to_width
-from data.settlement_entities import RoadCell, Districts
-from data.configurations import SettlementConfig
-from data.analysis_results import WorldAnalysisResult
+from utils.walkable_grid import build_cost_grid
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +21,9 @@ class RoadPlanner:
 
     Pipeline
     --------
-    1. Compute district centre points.
+    1. Compute district centre points in world coordinates.
     2. Build a Minimum Spanning Tree over those points.
-    3. Run A* along each MST edge on the walkable heightmap.
+    3. Run A* along each MST edge on the cost-weighted heightmap.
     4. Expand the centre-line cells to full road width.
     """
 
@@ -46,13 +49,17 @@ class RoadPlanner:
             could be found.
         """
         if not self.districts.district_list:
-            logger.warning("No building districts available — skipping road generation.")
+            logger.warning(
+                "No building districts available — skipping road generation."
+            )
             return []
 
         area       = self.analysis.best_area
-        road_width = self.config.road_width
-        walkable   = build_walkable_grid(self.analysis.water_mask)
         heightmap  = self.analysis.heightmap_ground
+        road_width = self.config.road_width
+
+        costs         = build_cost_grid(self.analysis.water_mask)
+        passable_mask = costs < np.inf
 
         # 1. District centre points in world coordinates
         connection_points = [
@@ -64,41 +71,73 @@ class RoadPlanner:
         edges = mst_edges(connection_points)
 
         # 3. A* path for each MST edge
-        road_cells: set[tuple[int, int]] = set()
+        centerline: set[tuple[int, int]] = set()
 
         for u, v in edges:
-            sx, sz = connection_points[u]
-            gx, gz = connection_points[v]
+            (sx, sz), (gx, gz) = connection_points[u], connection_points[v]
+
+            sx = int(np.clip(sx, area.x_from, area.x_to))
+            sz = int(np.clip(sz, area.z_from, area.z_to))
+            gx = int(np.clip(gx, area.x_from, area.x_to))
+            gz = int(np.clip(gz, area.z_from, area.z_to))
 
             try:
-                start = area.world_to_index(int(sx), int(sz))
-                goal  = area.world_to_index(int(gx), int(gz))
+                start = area.world_to_index(sx, sz)
+                goal  = area.world_to_index(gx, gz)
             except ValueError:
                 logger.warning(
-                    "District centre (%s, %s) → (%s, %s) is outside the build area — skipping edge.",
+                    "District centre (%s, %s) → (%s, %s) is outside the "
+                    "build area — skipping edge.",
                     sx, sz, gx, gz,
                 )
                 continue
 
-            path = find_path(walkable, heightmap, start, goal)
+            path = find_path(
+                passable_mask, heightmap, start, goal,
+                height_step_max=3,
+                height_cost=0.5,
+                costs=costs,
+            )
 
             if path is None:
                 logger.warning(
-                    "No path found between district centres (%s, %s) and (%s, %s).",
+                    "No path found between district centres (%s, %s) "
+                    "and (%s, %s).",
                     sx, sz, gx, gz,
                 )
                 continue
 
             for li, lj in path:
                 wx, wz = area.index_to_world(li, lj)
-                road_cells.add((wx, wz))
+                centerline.add((wx, wz))
 
-        if not road_cells:
-            logger.warning("No road cells generated — all paths failed or no edges in MST.")
+        if not centerline:
+            logger.warning(
+                "No road cells generated — all paths failed or no edges in MST."
+            )
             return []
 
-        # 4. Expand centre-line to full road width
-        bounds = (area.x_from, area.x_to, area.z_from, area.z_to)
-        expanded = expand_path_to_width(road_cells, road_width, bounds, blocked=set())
+        bounds   = (area.x_from, area.x_to, area.z_from, area.z_to)
+        expanded = expand_path_to_width(
+            centerline, road_width, bounds, blocked=set()
+        )
 
-        return [RoadCell(wx, wz) for wx, wz in expanded]
+        final_roads = [
+            RoadCell(wx, wz, type="bridge" if self._is_water(wx, wz) else "main_road")
+            for wx, wz in expanded
+        ]
+
+        logger.info(
+            "Generated %d road cells (including %d bridges).",
+            len(final_roads),
+            sum(1 for r in final_roads if r.type == "bridge"),
+        )
+        return final_roads
+
+    def _is_water(self, wx: int, wz: int) -> bool:
+        """Return True if world coordinate (wx, wz) is a water cell."""
+        area = self.analysis.best_area
+        if not area.contains_xz(wx, wz):
+            return False
+        lx, lz = area.world_to_index(wx, wz)
+        return bool(self.analysis.water_mask[lx, lz])

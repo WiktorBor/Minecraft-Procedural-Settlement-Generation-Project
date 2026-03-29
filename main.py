@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import random
 import sys
 
 import matplotlib.pyplot as plt
@@ -28,6 +27,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logging.getLogger("planning.settlement.plot_planner").setLevel(logging.DEBUG)
+logging.getLogger("generators.settlement_generator").setLevel(logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
@@ -113,7 +113,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--buildings", type=int, default=None,
-        help="Number of buildings to place (default: random 12–15).",
+        help="Cap the number of buildings to place (default: build all plots).",
     )
     parser.add_argument(
         "--visualize", action="store_true",
@@ -121,8 +121,11 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    num_buildings = args.buildings if args.buildings is not None else random.randint(12, 15)
-    logger.info("Targeting %d buildings for this settlement.", num_buildings)
+    num_buildings = args.buildings
+    if num_buildings is not None:
+        logger.info("Capping settlement at %d buildings.", num_buildings)
+    else:
+        logger.info("Building on all available plots.")
 
     # --- connect ---
     client = GDMCClient()

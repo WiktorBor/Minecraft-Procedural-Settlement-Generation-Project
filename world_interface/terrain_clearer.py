@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import logging
 from scipy.ndimage import label as ndimage_label
 from gdpc import Block
 from gdpc.editor import Editor
@@ -8,6 +9,7 @@ from data.configurations import TerrainConfig, SettlementConfig
 from data.analysis_results import WorldAnalysisResult
 from data.settlement_entities import Districts, Plot
 
+logger = logging.getLogger(__name__)
 
 def clear_area(
     editor: Editor,
@@ -510,387 +512,103 @@ def fill_below_surface(
 def seal_cave_openings(
     editor: Editor,
     analysis: WorldAnalysisResult,
-    drop_threshold: int = 3,
-    fill_depth: int = 4,
-    sample_radius: int = 3,
 ) -> None:
     """
-    Detect and seal cave openings, sinkholes, water holes, and lava pools.
+    Seal depressions by placing a flat dirt layer at the dominant ground level.
 
-    Detection uses three complementary masks:
-    1. Cave/sinkhole mask: cells whose ground heightmap value is more than
-       `drop_threshold` blocks below any cardinal neighbour — classic cave entrance.
-    2. Water hole mask: cells where water_mask is True AND the cell is
-       surrounded by non-water neighbours — isolated inland water pools.
-    3. Lava mask: cells where the surface block is lava — detected by sampling
-       heightmap_surface vs heightmap_ocean_floor difference.
+    Algorithm
+    ---------
+    1. Compute target_y = mode of all non-water cell heights (the most common
+       ground level, e.g. Y=64).
+    2. Find all non-water cells below target_y.
+    3. Label connected groups of those cells.
+    4. For each group, compute the bounding rectangle in (x, z).
+    5. Place a single layer of minecraft:dirt at target_y across the entire
+       bounding rectangle, then update the heightmap.
 
-    All detected holes are grouped by connectivity, then each group is filled
-    to the lowest rim neighbour height using:
-    - Subsurface layers: most common subsurface block from rim (weighted by distance)
-    - Cap layer: most common surface block from rim (weighted by distance)
-
-    The heightmap is updated in-place.
+    No column scanning, no getBlock calls — just one flat layer per hole.
 
     Args:
-        editor: GDPC Editor instance (buffering=True recommended).
+        editor:   GDPC Editor instance (buffering=True recommended).
         analysis: WorldAnalysisResult — heightmap_ground updated in-place.
-        drop_threshold: Min height drop vs neighbour to flag as cave (default 3).
-        fill_depth: Blocks deep to fill before placing surface cap (default 4).
-        sample_radius: Radius for rim block sampling (default 3).
     """
-    area      = analysis.best_area
-    heightmap = analysis.heightmap_ground
-    w, d      = heightmap.shape
+    area       = analysis.best_area
+    heightmap  = analysis.heightmap_ground
+    water_mask = analysis.water_mask.astype(bool)
 
-    # ------------------------------------------------------------------
-    # Step 1: build combined hole mask
-    # ------------------------------------------------------------------
+    # target_y = mode of non-water land heights
+    land_heights = heightmap[~water_mask].astype(np.int32)
+    if land_heights.size == 0:
+        land_heights = heightmap.astype(np.int32).ravel()
+
+    counts   = np.bincount(land_heights - land_heights.min())
+    target_y = int(land_heights.min() + np.argmax(counts))
+
+    # Detect holes by steep topographic drop: a cell is a hole if it is at
+    # least drop_threshold blocks below any of its cardinal neighbours.
+    # This targets sharp cave/sinkhole edges and ignores gentle river banks.
     h = heightmap.astype(np.float32)
-
-    # --- 1a: cave/sinkhole — drop > threshold vs any cardinal neighbour ---
-    neighbour_max = np.full((w, d), -np.inf, dtype=np.float32)
+    neighbour_max = np.full(h.shape, -np.inf, dtype=np.float32)
     neighbour_max[:-1, :] = np.maximum(neighbour_max[:-1, :], h[1:,  :])
     neighbour_max[1:,  :] = np.maximum(neighbour_max[1:,  :], h[:-1, :])
     neighbour_max[:,  :-1] = np.maximum(neighbour_max[:, :-1], h[:,  1:])
     neighbour_max[:,   1:] = np.maximum(neighbour_max[:,  1:], h[:,  :-1])
     neighbour_max = np.where(np.isinf(neighbour_max), h, neighbour_max)
-    cave_mask = (neighbour_max - h) >= drop_threshold
 
-    # --- 1b: water holes — small isolated inland water pools only ---
-    # Label all connected water regions. Only regions with cell count <=
-    # _WATER_POOL_MAX_CELLS are flagged for filling. Large connected bodies
-    # (rivers, lakes, oceans) are left untouched.
-    #
-    # Fix: the previous logic flagged any water cell with a dry neighbour,
-    # which included every cell along a river bank — causing entire rivers
-    # to be incorrectly filled. Size-based filtering avoids this.
-    _WATER_POOL_MAX_CELLS = 40
-
-    water_mask = analysis.water_mask.astype(bool)
-    water_hole_mask = np.zeros((w, d), dtype=bool)
-
-    if np.any(water_mask):
-        water_labeled, num_water = ndimage_label(water_mask)
-        if num_water > 0:
-            water_sizes = np.bincount(water_labeled.ravel())[1:]
-            for wid in range(1, num_water + 1):
-                if water_sizes[wid - 1] <= _WATER_POOL_MAX_CELLS:
-                    water_hole_mask |= (water_labeled == wid)
-
-    # --- 1c: lava holes — cells where surface is significantly above ground
-    #     (plant_thickness > 0 usually, but lava shows as surface == ocean_floor
-    #     with large drop). Detect via large drop + water_mask False ---
-    # Use the ocean_floor heightmap: lava pools sit on ocean_floor with
-    # surface equal to lava height. Detect as: ground - ocean_floor > 3
-    # AND not water (lava isn't tracked by water_mask)
-    if analysis.heightmap_ocean_floor is not None:
-        lava_mask = (
-            (analysis.heightmap_ground - analysis.heightmap_ocean_floor > 3) &
-            ~water_mask &
-            cave_mask  # must also be a steep drop
-        )
-    else:
-        lava_mask = np.zeros((w, d), dtype=bool)
-
-    # --- 1d: wide shallow depressions ---
-    # The cave mask only catches sharp drops (>= drop_threshold vs a single
-    # neighbour). Wide gradual depressions — like image 2, a 3x3 pit that is
-    # 2 blocks deep — have no single edge that exceeds the threshold because
-    # all their neighbours are also depressed.
-    #
-    # Fix: for every unflagged cell, check if it is below the LOCAL mean of
-    # a small neighbourhood (radius 2). Cells more than 1.5 blocks below their
-    # local mean in a predominantly-flat neighbourhood are shallow depressions.
-    from scipy.ndimage import uniform_filter
-    _r = 2
-    local_mean_shallow = uniform_filter(h, size=2 * _r + 1)
-    # Only flag as shallow depression where the local terrain is relatively flat
-    # (low std) — avoids false positives on hillsides.
-    local_std_shallow = np.sqrt(np.maximum(
-        uniform_filter(h ** 2, size=2 * _r + 1) - local_mean_shallow ** 2, 0.0
-    ))
-    shallow_mask = (
-        (local_mean_shallow - h >= 1.5) &   # at least 1.5 below local mean
-        (local_std_shallow <= 3.0) &         # neighbourhood is relatively flat
-        ~cave_mask                           # not already caught by cave detector
+    drop_threshold = 2
+    hole_mask = (
+        ((neighbour_max - h) >= drop_threshold) &
+        (heightmap < target_y) &
+        ~water_mask
     )
-
-    # Combine all hole types
-    hole_mask = cave_mask | water_hole_mask | lava_mask | shallow_mask
 
     if not np.any(hole_mask):
         return
 
-    # ------------------------------------------------------------------
-    # Step 2: group connected hole cells
-    # ------------------------------------------------------------------
     labeled, num_holes = ndimage_label(hole_mask)
-    if num_holes == 0:
-        return
 
-    # Pre-build inverse-distance offset grid (same pattern as fill_below_surface)
-    offsets: list[tuple[int, int, float]] = []
-    for dx in range(-sample_radius, sample_radius + 1):
-        for dz in range(-sample_radius, sample_radius + 1):
-            if dx == 0 and dz == 0:
-                continue
-            dist = (dx * dx + dz * dz) ** 0.5
-            offsets.append((dx, dz, 1.0 / dist))
+    # Size filter: ignore groups that are noise (< min_cells) or large
+    # depressions / valleys (> max_cells) that should not be filled.
+    min_cells = 2
+    max_cells = 150
 
-    # ------------------------------------------------------------------
-    # Step 3: process each hole group
-    # ------------------------------------------------------------------
-    for hole_id in range(1, num_holes + 1):
-        hole_cells = np.argwhere(labeled == hole_id)
-
-        # Find rim cells: non-hole neighbours of any hole cell
-        rim_set: set[tuple[int, int]] = set()
-        for cx, cz in hole_cells:
-            cx, cz = int(cx), int(cz)
-            for dx, dz in [(1,0),(-1,0),(0,1),(0,-1)]:
-                nx, nz = cx + dx, cz + dz
-                if 0 <= nx < w and 0 <= nz < d and not hole_mask[nx, nz]:
-                    rim_set.add((nx, nz))
-
-        if not rim_set:
-            continue
-
-        # Target fill height = lowest rim neighbour surface
-        target_y = min(int(heightmap[rx, rz]) for rx, rz in rim_set)
-
-        # ------------------------------------------------------------------
-        # Sample surface and subsurface blocks from rim, weighted by distance
-        # ------------------------------------------------------------------
-        # surface_weights: blocks at rim surface height (for the cap layer)
-        # sub_weights:     blocks one below rim surface (for subsurface fill)
-        surface_weights: dict[str, float] = {}
-        sub_weights:     dict[str, float] = {}
-
-        for cx, cz in hole_cells:
-            cx, cz = int(cx), int(cz)
-
-            for dx, dz, weight in offsets:
-                nx, nz = cx + dx, cz + dz
-                if not (0 <= nx < w and 0 <= nz < d):
-                    continue
-                if hole_mask[nx, nz]:
-                    continue  # only sample from non-hole (rim/plateau) cells
-
-                surf_y = int(heightmap[nx, nz])
-                wx, wz = area.index_to_world(nx, nz)
-
-                # Surface block (cap)
-                blk = editor.getBlock((wx, surf_y, wz))
-                bid = blk.id.lower()
-                if bid and bid != "minecraft:air":
-                    surface_weights[bid] = surface_weights.get(bid, 0.0) + weight
-
-                # Subsurface block (fill body) — one below surface
-                if surf_y - 1 >= 0:
-                    blk_sub = editor.getBlock((wx, surf_y - 1, wz))
-                    bid_sub = blk_sub.id.lower()
-                    if bid_sub and bid_sub != "minecraft:air":
-                        sub_weights[bid_sub] = sub_weights.get(bid_sub, 0.0) + weight
-
-        surface_block = Block(max(surface_weights, key=surface_weights.get)
-                              if surface_weights else "minecraft:grass_block")
-        sub_block     = Block(max(sub_weights, key=sub_weights.get)
-                              if sub_weights else "minecraft:dirt")
-
-        # ------------------------------------------------------------------
-        # Step 4: fill each hole cell
-        # ------------------------------------------------------------------
-        for cx, cz in hole_cells:
-            cx, cz  = int(cx), int(cz)
-            wx, wz  = area.index_to_world(cx, cz)
-
-            # For water/lava cells, use the ocean_floor height as the actual
-            # bottom of the hole so we fill the fluid completely
-            is_water = bool(water_hole_mask[cx, cz]) if 'water_hole_mask' in dir() else False
-            cell_y   = int(analysis.heightmap_ocean_floor[cx, cz]) if (
-                is_water and analysis.heightmap_ocean_floor is not None
-            ) else int(heightmap[cx, cz])
-
-            if cell_y >= target_y:
-                continue
-
-            # Fill the entire column from the hole bottom up to target_y.
-            # Previously fill_depth capped how deep the fill went, leaving a
-            # gap of air blocks at the bottom of deep caves — now we always
-            # fill the full depth so no open cave remains.
-            solid_from = cell_y + 1
-            solid_to   = target_y - 1   # one below the cap
-
-            # Subsurface fill (solid body)
-            if solid_from <= solid_to:
-                positions = [(wx, wy, wz) for wy in range(solid_from, solid_to + 1)]
-                editor.placeBlock(positions, sub_block)
-
-            # If the hole cell was water or lava, explicitly clear those
-            # fluid blocks before placing the cap — otherwise the fluid
-            # remains visible above the fill.
-            if hole_mask[cx, cz]:
-                for wy in range(cell_y, target_y + 1):
-                    editor.placeBlock((wx, wy, wz), Block('minecraft:air'))
-
-            # Cap layer (surface block)
-            editor.placeBlock((wx, target_y, wz), surface_block)
-
-            # Update heightmap
-            heightmap[cx, cz] = target_y
-
-
-def seal_cave_openings(
-    editor: Editor,
-    analysis: WorldAnalysisResult,
-    detection_radius: int = 4,
-    depth_threshold_std: float = 2.0,
-    surface_sample_radius: int = 2,
-) -> None:
-    """
-    Detect and seal cave openings / sinkholes in the terrain.
-
-    Uses heightmap_ground to find cells that are anomalously deep compared
-    to their local neighbourhood — the signature of a cave entrance or sinkhole
-    rather than a natural slope.  The entire connected depression is flood-filled
-    to blend with the surrounding terrain.
-
-    Detection
-    ---------
-    For each cell, compute the mean and standard deviation of heightmap_ground
-    within a `detection_radius` neighbourhood (via uniform_filter).  A cell is
-    flagged as a hole if:
-        cell_height < local_mean - depth_threshold_std * local_std
-
-    This is adaptive — on flat terrain even a 3-block drop gets flagged, while
-    on naturally rough terrain the threshold rises to avoid false positives.
-
-    Fill strategy
-    -------------
-    1. Flood-fill each connected hole region to find the full depression extent.
-    2. Compute the target fill height as the mean height of the hole's rim cells
-       (the non-hole neighbours immediately surrounding the depression).
-    3. Sample surface blocks from the rim using inverse-distance weighting —
-       the most common weighted block becomes the cap (top layer).
-    4. Fill from hole_bottom+1 to target_height-1 with minecraft:dirt, then
-       place the sampled cap block at target_height.
-    5. Update heightmap_ground in-place.
-
-    Args:
-        editor: GDPC Editor instance.
-        analysis: WorldAnalysisResult — heightmap_ground updated in-place.
-        detection_radius: Neighbourhood radius for local mean/std computation (default 4).
-        depth_threshold_std: How many standard deviations below local mean a cell
-                             must be to count as a hole (default 2.0).
-        surface_sample_radius: Chebyshev radius around each rim cell to sample
-                                surface blocks from (default 2).
-    """
-    from scipy.ndimage import uniform_filter
-
-    area      = analysis.best_area
-    heightmap = analysis.heightmap_ground.astype(np.float32)
-    w, d      = heightmap.shape
-
-    size = 2 * detection_radius + 1
-
-    # ------------------------------------------------------------------
-    # Step 1: compute local mean and std, detect hole cells
-    # ------------------------------------------------------------------
-    local_mean = uniform_filter(heightmap, size=size)
-    # std = sqrt(E[x²] - E[x]²)
-    local_std  = np.sqrt(
-        np.maximum(
-            uniform_filter(heightmap ** 2, size=size) - local_mean ** 2,
-            0.0,
-        )
+    logger.info(
+        "seal_cave_openings: target_y=%d, %d raw group(s) before size filter.",
+        target_y, num_holes,
     )
 
-    hole_mask = heightmap < (local_mean - depth_threshold_std * local_std)
-
-    if not np.any(hole_mask):
-        return
-
-    # ------------------------------------------------------------------
-    # Step 2: flood-fill connected hole regions
-    # ------------------------------------------------------------------
-    from scipy.ndimage import label as ndimage_label
-    labeled, num_holes = ndimage_label(hole_mask)
-
-    if num_holes == 0:
-        return
-
     for hole_id in range(1, num_holes + 1):
-        hole_cells = np.argwhere(labeled == hole_id)
+        cells = np.argwhere(labeled == hole_id)
 
-        # ------------------------------------------------------------------
-        # Step 3: find the rim — non-hole cells directly adjacent to this hole
-        # ------------------------------------------------------------------
-        rim_set: set[tuple[int, int]] = set()
-        for cx, cz in hole_cells:
-            cx, cz = int(cx), int(cz)
-            for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                nx, nz = cx + dx, cz + dz
-                if 0 <= nx < w and 0 <= nz < d and not hole_mask[nx, nz]:
-                    rim_set.add((nx, nz))
-
-        if not rim_set:
+        if len(cells) < min_cells:
+            logger.debug("  Hole %d: %d cell(s) — too small, skipped.", hole_id, len(cells))
+            continue
+        if len(cells) > max_cells:
+            logger.debug("  Hole %d: %d cell(s) — too large, skipped.", hole_id, len(cells))
             continue
 
-        rim_cells  = np.array(list(rim_set))
-        target_y   = int(np.mean(heightmap[rim_cells[:, 0], rim_cells[:, 1]]))
+        # Bounding rectangle in local grid indices
+        ix_min, iz_min = cells[:, 0].min(), cells[:, 1].min()
+        ix_max, iz_max = cells[:, 0].max(), cells[:, 1].max()
 
-        # ------------------------------------------------------------------
-        # Step 4: sample surface blocks from the rim (inverse-distance weighted)
-        # ------------------------------------------------------------------
-        block_weights: dict[str, float] = {}
+        # Place a flat dirt layer at target_y across the entire bounding box
+        positions = []
+        for ix in range(int(ix_min), int(ix_max) + 1):
+            for iz in range(int(iz_min), int(iz_max) + 1):
+                wx, wz = area.index_to_world(ix, iz)
+                positions.append((wx, target_y, wz))
 
-        for rx, rz in rim_set:
-            for dx in range(-surface_sample_radius, surface_sample_radius + 1):
-                for dz in range(-surface_sample_radius, surface_sample_radius + 1):
-                    nx, nz = rx + dx, rz + dz
-                    if not (0 <= nx < w and 0 <= nz < d):
-                        continue
-                    if hole_mask[nx, nz]:
-                        continue  # don't sample from inside the hole
+        editor.placeBlock(positions, Block("minecraft:dirt"))
 
-                    dist = max((dx * dx + dz * dz) ** 0.5, 0.01)
-                    weight = 1.0 / dist
-
-                    surf_y  = int(heightmap[nx, nz])
-                    wx, wz  = area.index_to_world(nx, nz)
-                    block   = editor.getBlock((wx, surf_y, wz))
-                    bid     = block.id.lower()
-
-                    if bid and bid != "minecraft:air":
-                        block_weights[bid] = block_weights.get(bid, 0.0) + weight
-
-        cap_block_id = (
-            max(block_weights, key=block_weights.get)
-            if block_weights else "minecraft:dirt"
+        # Update heightmap for all cells in the bounding box
+        heightmap[ix_min:ix_max + 1, iz_min:iz_max + 1] = np.maximum(
+            heightmap[ix_min:ix_max + 1, iz_min:iz_max + 1],
+            target_y,
         )
 
-        # ------------------------------------------------------------------
-        # Step 5: fill each hole cell
-        # ------------------------------------------------------------------
-        for cx, cz in hole_cells:
-            cx, cz  = int(cx), int(cz)
-            hole_y  = int(heightmap[cx, cz])
-            wx, wz  = area.index_to_world(cx, cz)
+        logger.debug(
+            "  Hole %d: bbox ix=[%d,%d] iz=[%d,%d] → y=%d (%d blocks placed).",
+            hole_id, ix_min, ix_max, iz_min, iz_max, target_y, len(positions),
+        )
 
-            if hole_y >= target_y:
-                continue
 
-            # Fill with dirt from hole bottom up to target_y - 1
-            dirt_positions = [
-                (wx, wy, wz)
-                for wy in range(hole_y + 1, target_y)
-            ]
-            if dirt_positions:
-                editor.placeBlock(dirt_positions, Block("minecraft:dirt"))
-
-            # Cap with the sampled surface block at target_y
-            editor.placeBlock((wx, target_y, wz), Block(cap_block_id))
-
-            # Update heightmap
-            analysis.heightmap_ground[cx, cz] = target_y

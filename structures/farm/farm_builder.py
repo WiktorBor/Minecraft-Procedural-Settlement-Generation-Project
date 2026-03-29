@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import random
 import logging
+import random
 
 from gdpc import Block
 from gdpc.editor import Editor
@@ -16,8 +16,13 @@ logger = logging.getLogger(__name__)
 _CROP_PAIRS: list[tuple[str, str]] = [
     ("minecraft:wheat",   "minecraft:carrots"),
     ("minecraft:wheat",   "minecraft:potatoes"),
-    ("minecraft:carrots", "minecraft:_seeds"),
+    ("minecraft:carrots", "minecraft:beetroots"),
 ]
+
+# Maximum valid age per crop type (beetroots max at 3, others at 7)
+_CROP_MAX_AGE: dict[str, int] = {
+    "minecraft:beetroots": 3,
+}
 
 
 class FarmBuilder:
@@ -31,11 +36,7 @@ class FarmBuilder:
         └─────────────────┘
     """
 
-    def __init__(
-        self,
-        editor: Editor,
-        palette: BiomePalette,
-    ) -> None:
+    def __init__(self, editor: Editor, palette: BiomePalette) -> None:
         self.editor  = editor
         self.palette = palette
 
@@ -45,59 +46,66 @@ class FarmBuilder:
         y    = plot.y
         w, d = plot.width, plot.depth
 
-        # Randomise size slightly within the plot footprint
         w = max(5, w - random.choice([0, 2]))
         d = max(5, d - random.choice([0, 2]))
 
-        basin_block = palette_get(self.palette, "accent", "minecraft:oak_log")
+        basin_block          = palette_get(self.palette, "accent", "minecraft:oak_log")
         crops_left, crops_right = random.choice(_CROP_PAIRS)
-        channel_x = x + w // 2
+        channel_x            = x + w // 2
 
-        # --- base frame (y-1) ---
+        # Base frame (y-1)
         geo.placeCuboid(
             self.editor,
             (x, y - 1, z), (x + w - 1, y - 1, z + d - 1),
             Block(basin_block),
         )
 
-        # --- perimeter frame (y) ---
+        # Perimeter frame (y)
         geo.placeCuboidWireframe(
             self.editor,
             (x, y, z), (x + w - 1, y, z + d - 1),
             Block(basin_block),
         )
 
-        # --- farmland interior ---
+        # Farmland interior
         geo.placeCuboid(
             self.editor,
             (x + 1, y, z + 1), (x + w - 2, y, z + d - 2),
             Block("minecraft:farmland"),
         )
 
-        # --- central water channel ---
+        # Central water channel
         geo.placeLine(
             self.editor,
             (channel_x, y, z + 1), (channel_x, y, z + d - 2),
             Block("minecraft:water"),
         )
 
-        # --- crops either side of channel ---
+        # Crops either side of channel
+        age_left  = str(_CROP_MAX_AGE.get(crops_left,  7))
+        age_right = str(_CROP_MAX_AGE.get(crops_right, 7))
         if channel_x - 1 >= x + 1:
             geo.placeCuboid(
                 self.editor,
                 (x + 1, y + 1, z + 1), (channel_x - 1, y + 1, z + d - 2),
-                Block(crops_left, {"age": "7"}),
+                Block(crops_left, {"age": age_left}),
             )
         if channel_x + 1 <= x + w - 2:
             geo.placeCuboid(
                 self.editor,
                 (channel_x + 1, y + 1, z + 1), (x + w - 2, y + 1, z + d - 2),
-                Block(crops_right, {"age": "7"}),
+                Block(crops_right, {"age": age_right}),
             )
 
-        # --- lanterns at corners for medieval feel ---
+        # Lanterns at corners
         light = palette_get(self.palette, "light", "minecraft:lantern")
-        for lx, lz in [(x, z), (x + w - 1, z), (x, z + d - 1), (x + w - 1, z + d - 1)]:
+        corners = [
+            (x,         z        ),
+            (x + w - 1, z        ),
+            (x,         z + d - 1),
+            (x + w - 1, z + d - 1),
+        ]
+        for lx, lz in corners:
             self.editor.placeBlock((lx, y + 1, lz), Block(light))
 
         logger.debug("Farm built at (%d, %d, %d) size %dx%d.", x, y, z, w, d)

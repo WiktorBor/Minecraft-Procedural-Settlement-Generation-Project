@@ -5,13 +5,13 @@ from typing import Iterable
 
 from gdpc import Block
 from gdpc.editor import Editor
-import gdpc.geometry as geo
 
 from data.analysis_results import WorldAnalysisResult
 from data.biome_palettes import BiomePalette, palette_get
 from data.build_area import BuildArea
 from data.configurations import SettlementConfig
 from data.settlement_entities import Building
+from structures.tower.tower_builder import TowerBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -52,38 +52,36 @@ class FortificationBuilder:
         """
         Place the full fortification.
 
-        Args:
-            buildings: Optional iterable of already-placed Building objects.
-                       The wall will never overwrite any building footprint.
+        Parameters
+        ----------
+        buildings : iterable of Building, optional
+            Already-placed structures whose footprints the wall must avoid.
         """
         area      = self.analysis.best_area
         heightmap = self.analysis.heightmap_ground
         cfg       = self.config
 
-        tw  = cfg.tower_width
-        th  = cfg.tower_height
-        wh  = cfg.wall_height
-        wt  = cfg.wall_thickness
-        gw  = getattr(cfg, "gate_width", 4)
+        tw = cfg.tower_width
+        th = cfg.tower_height
+        wh = cfg.wall_height
+        wt = cfg.wall_thickness
+        gw = getattr(cfg, "gate_width", 4)
 
         wall_block   = self.palette["wall"]
         accent_block = self.palette["accent"]
         found_block  = self.palette["foundation"]
-        light_block  = palette_get(self.palette, "light",  "minecraft:lantern")
-        window_block = palette_get(self.palette, "window", "minecraft:iron_bars")
-        door_block   = palette_get(self.palette, "door",   "minecraft:oak_door")
-        slab_block   = palette_get(self.palette, "slab",   "minecraft:cobblestone_slab")
+        light_block  = palette_get(self.palette, "light",     "minecraft:lantern")
+        window_block = palette_get(self.palette, "window",    "minecraft:iron_bars")
+        slab_block   = palette_get(self.palette, "roof_slab", "minecraft:cobblestone_slab")
 
         corners = self._corner_positions(area, tw)
 
-        # Tower bounding boxes for wall collision checks
         tower_boxes = [
             (cx, cz, cx + tw - 1, cz + tw - 1)
             for cx, cz in corners
         ]
 
-        # Building footprints — expand by 1 block buffer
-        building_boxes: list[tuple[int,int,int,int]] = []
+        building_boxes: list[tuple[int, int, int, int]] = []
         if buildings:
             for b in buildings:
                 building_boxes.append((
@@ -91,10 +89,7 @@ class FortificationBuilder:
                     b.x + b.width, b.z + b.depth,
                 ))
 
-        # --- Corner towers ---
-        # Towers sit outside best_area so world_to_index will raise ValueError.
-        # Clamp the lookup to the nearest best_area edge for a sensible ground height.
-        from structures.tower.tower_builder import TowerBuilder
+        # Corner towers — clamp height lookup to best_area bounds
         tower_builder = TowerBuilder(self.editor, self.palette, height=th, width=tw)
         for cx, cz in corners:
             li = max(0, min(heightmap.shape[0] - 1, cx - area.x_from))
@@ -102,9 +97,7 @@ class FortificationBuilder:
             cy = int(heightmap[li, lj])
             tower_builder.build_at(cx, cy, cz)
 
-        # --- Wall segments ---
-        # Each wall runs at the tower midline and spans exactly the best_area side.
-        # South wall gets the gate.
+        # Wall segments
         wall_sides = [
             ("north", False),
             ("south", True),
@@ -136,16 +129,12 @@ class FortificationBuilder:
         """
         [NW, NE, SW, SE] tower origins positioned so the tower inner corner
         is exactly flush with the best_area corner.
-
-        Tower NW origin is at (area.x_from - tw, area.z_from - tw).
-        The inner corner of that tower (x + tw-1, z + tw-1) = (area.x_from - 1, area.z_from - 1)
-        which is exactly adjacent to the area corner — no gap, no overlap.
         """
         return [
-            (area.x_from - tw,  area.z_from - tw),   # NW
-            (area.x_to   + 1,   area.z_from - tw),   # NE
-            (area.x_from - tw,  area.z_to   + 1),    # SW
-            (area.x_to   + 1,   area.z_to   + 1),    # SE
+            (area.x_from - tw,  area.z_from - tw),
+            (area.x_to   + 1,   area.z_from - tw),
+            (area.x_from - tw,  area.z_to   + 1 ),
+            (area.x_to   + 1,   area.z_to   + 1 ),
         ]
 
     @staticmethod
@@ -157,17 +146,10 @@ class FortificationBuilder:
         """
         Return (start_x, start_z, end_x, end_z) for a wall segment running
         along the tower midline for a given side of the best_area.
-
-        The wall runs at the midpoint of the tower face (tower_origin + tw//2),
-        and spans exactly the length of the corresponding best_area side.
-
-        side: "north" | "south" | "east" | "west"
         """
-        mid = tw // 2   # offset from tower origin to tower midline
+        mid = tw // 2
 
         if side == "north":
-            # Wall runs along X at z = area.z_from - mid - 1
-            # spans x from area.x_from to area.x_to
             wz = area.z_from - mid - 1
             return area.x_from, wz, area.x_to, wz
         elif side == "south":
@@ -182,11 +164,12 @@ class FortificationBuilder:
 
     @staticmethod
     def _in_box(
-        wx: int, wz: int,
-        boxes: list[tuple[int,int,int,int]],
+        wx: int,
+        wz: int,
+        boxes: list[tuple[int, int, int, int]],
         thickness: int = 0,
     ) -> bool:
-        """Return True if (wx, wz) falls inside any box (with optional thickness padding)."""
+        """Return True if (wx, wz) falls inside any box."""
         for x0, z0, x1, z1 in boxes:
             if x0 - thickness <= wx <= x1 + thickness and \
                z0 - thickness <= wz <= z1 + thickness:
@@ -216,15 +199,15 @@ class FortificationBuilder:
         building_boxes: list,
         has_gate: bool = False,
     ) -> None:
-        dx = bx - ax
-        dz = bz - az
+        dx    = bx - ax
+        dz    = bz - az
         steps = max(abs(dx), abs(dz))
         if steps == 0:
             return
 
-        along_x    = abs(dx) >= abs(dz)
-        gate_mid   = steps // 2
-        gate_half  = gate_w // 2
+        along_x   = abs(dx) >= abs(dz)
+        gate_mid  = steps // 2
+        gate_half = gate_w // 2
         light_props = {"hanging": "false"} if "lantern" in light_block else {}
 
         for step in range(0, steps + 1):
@@ -232,15 +215,11 @@ class FortificationBuilder:
             wx = int(ax + round(t * dx))
             wz = int(az + round(t * dz))
 
-            # Skip if this column is inside a tower footprint
             if self._in_box(wx, wz, tower_boxes):
                 continue
-
-            # Skip if this column overlaps a building (with 1-block buffer)
             if self._in_box(wx, wz, building_boxes):
                 continue
 
-            # Clamp to nearest best_area edge for height — wall may be just outside
             li = max(0, min(heightmap.shape[0] - 1, wx - area.x_from))
             lj = max(0, min(heightmap.shape[1] - 1, wz - area.z_from))
             gy = int(heightmap[li, lj])
@@ -274,13 +253,11 @@ class FortificationBuilder:
         wall_block: str, accent_block: str, found_block: str,
         light_block: str, light_props: dict,
     ) -> None:
-        # Foundation 1 below ground
         for t in range(wall_t):
             ox = 0 if along_x else t
             oz = t if along_x else 0
             self.editor.placeBlock((wx + ox, gy - 1, wz + oz), Block(found_block))
 
-        # Solid wall body (all thickness layers)
         for dy in range(wall_h):
             y = gy + dy
             for t in range(wall_t):
@@ -288,40 +265,36 @@ class FortificationBuilder:
                 oz = t if along_x else 0
                 self.editor.placeBlock((wx + ox, y, wz + oz), Block(wall_block))
 
-        top_y = gy + wall_h
-
-        # Proper battlements: 2-wide merlon then 1-wide gap (pattern repeats every 3)
-        # step % 3 == 0 or 1 → merlon, step % 3 == 2 → gap
+        top_y     = gy + wall_h
         is_merlon = (step % 3 != 2)
         if is_merlon:
             self.editor.placeBlock((wx, top_y, wz), Block(accent_block))
 
-        # Walkway slab on inner face of wall top (only on inner thickness layer)
-        inner_t = wall_t - 1
+        inner_t  = wall_t - 1
         ox_inner = 0 if along_x else inner_t
         oz_inner = inner_t if along_x else 0
         self.editor.placeBlock(
             (wx + ox_inner, top_y, wz + oz_inner),
-            Block(accent_block if is_merlon else wall_block))
+            Block(accent_block if is_merlon else wall_block),
+        )
 
-        # Buttress: protruding 1 block outward every 8 steps, 2 blocks wide
-        # Buttress sticks out on the outer face (t=0 direction)
         if step % 8 in (0, 1):
             butt_ox = (-1 if along_x else 0)
             butt_oz = (0 if along_x else -1)
-            for dy in range(wall_h - 1):  # slightly shorter than wall
+            for dy in range(wall_h - 1):
                 self.editor.placeBlock(
                     (wx + butt_ox, gy + dy, wz + butt_oz),
-                    Block(wall_block))
-            # Buttress cap (slab)
+                    Block(wall_block),
+                )
             self.editor.placeBlock(
                 (wx + butt_ox, gy + wall_h - 1, wz + butt_oz),
-                Block(accent_block))
+                Block(accent_block),
+            )
 
-        # Lantern on a merlon every 12 steps
         if step % 12 == 0 and is_merlon:
             self.editor.placeBlock(
-                (wx, top_y + 1, wz), Block(light_block, light_props))
+                (wx, top_y + 1, wz), Block(light_block, light_props)
+            )
 
     # ------------------------------------------------------------------
     # Gate arch column
@@ -336,22 +309,8 @@ class FortificationBuilder:
         window_block: str, slab_block: str, light_block: str,
         is_centre: bool, light_props: dict,
     ) -> None:
-        """
-        Gate arch column.
+        gate_h = 3
 
-        Layout (from bottom up):
-          gy+0 .. gy+2  : open passage (air inside, iron bars on outer face)
-          gy+3          : arch keystone row — accent block forms the lintel
-          gy+4 .. top   : solid wall above arch
-          top           : merlon cap
-
-        The accent block forms a visible arch frame on the outer face.
-        A hanging lantern drops from the keystone centre.
-        Torches are placed on the inner arch jambs for warmth.
-        """
-        gate_h = 3   # clear opening height
-
-        # Foundation
         for t in range(wall_t):
             ox = 0 if along_x else t
             oz = t if along_x else 0
@@ -360,41 +319,36 @@ class FortificationBuilder:
         for dy in range(wall_h):
             y = gy + dy
             for t in range(wall_t):
-                ox = 0 if along_x else t
-                oz = t if along_x else 0
+                ox  = 0 if along_x else t
+                oz  = t if along_x else 0
                 wx_ = wx + ox
                 wz_ = wz + oz
 
                 if dy < gate_h:
                     if t == 0:
-                        # Outer face: iron bar portcullis in the opening
                         self.editor.placeBlock((wx_, y, wz_), Block(window_block))
                     else:
                         self.editor.placeBlock((wx_, y, wz_), Block("minecraft:air"))
-
                 elif dy == gate_h:
-                    # Arch lintel row — accent block on all faces for a clear frame
                     self.editor.placeBlock((wx_, y, wz_), Block(accent_block))
-
                 else:
                     self.editor.placeBlock((wx_, y, wz_), Block(wall_block))
 
-        # Merlon cap on top
         top_y = gy + wall_h
         self.editor.placeBlock((wx, top_y, wz), Block(accent_block))
 
-        # Hanging lantern at keystone centre
         if is_centre:
             hang_props = {"hanging": "true"} if "lantern" in light_block else light_props
             self.editor.placeBlock(
-                (wx, gy + gate_h - 1, wz), Block(light_block, hang_props))
+                (wx, gy + gate_h - 1, wz), Block(light_block, hang_props)
+            )
 
-        # Torch on inner arch jamb (the block just inside the passage at gate_h-1)
         if not is_centre:
-            inner_t = wall_t - 1
+            inner_t  = wall_t - 1
             ox_inner = 0 if along_x else inner_t
             oz_inner = inner_t if along_x else 0
             self.editor.placeBlock(
                 (wx + ox_inner, gy + gate_h, wz + oz_inner),
                 Block("minecraft:wall_torch",
-                      {"facing": "south" if along_x else "east"}))
+                      {"facing": "south" if along_x else "east"}),
+            )

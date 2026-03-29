@@ -3,10 +3,11 @@ from __future__ import annotations
 import numpy as np
 from scipy.ndimage import (
     distance_transform_edt,
-    uniform_filter,
     maximum_filter,
     minimum_filter,
+    uniform_filter,
 )
+
 from data.configurations import TerrainConfig
 
 
@@ -19,6 +20,20 @@ class TerrainAnalyser:
     Call `compute_scores()` as the single public entry point — it runs all
     metrics in the correct order and populates every output attribute.
     Individual `_compute_*` methods are private implementation details.
+
+    All output arrays share the shape of the input heightmaps.
+
+    Output attributes (populated after compute_scores())
+    -----------------------------------------------------
+    slope_map       : float32 — local slope magnitude (np.gradient output)
+    flatness        : float32 — inverse local variance, in (0, 1]
+    accessibility   : float32 — fraction of 4-neighbours reachable, in [0, 1]
+    expansion       : float32 — fraction of neighbourhood that is flat, in [0, 1]
+    biome_score     : float32 — per-cell biome suitability weight, in [0, 1]
+    water_mask      : bool    — True where the cell is water
+    water_distances : float32 — distance to nearest water cell (cells)
+    roughness_map   : float32 — local height range
+    scores          : float32 — normalised composite suitability score, in [0, 1]
     """
 
     def __init__(
@@ -36,17 +51,19 @@ class TerrainAnalyser:
         self.config = config
 
         # Analysis outputs — populated by compute_scores()
-        self.slope_map:      np.ndarray | None = None
-        self.flatness:       np.ndarray | None = None
-        self.accessibility:  np.ndarray | None = None
-        self.expansion:      np.ndarray | None = None
-        self.biome_score:    np.ndarray | None = None
-        self.water_mask:     np.ndarray | None = None
+        self.slope_map:       np.ndarray | None = None
+        self.flatness:        np.ndarray | None = None
+        self.accessibility:   np.ndarray | None = None
+        self.expansion:       np.ndarray | None = None
+        self.biome_score:     np.ndarray | None = None
+        self.water_mask:      np.ndarray | None = None
         self.water_distances: np.ndarray | None = None
-        self.roughness_map:  np.ndarray | None = None
-        self.scores:         np.ndarray | None = None
+        self.roughness_map:   np.ndarray | None = None
+        self.scores:          np.ndarray | None = None
 
+    # ------------------------------------------------------------------
     # Private metric computations
+    # ------------------------------------------------------------------
 
     def _compute_slope(self) -> None:
         gx, gz = np.gradient(self.heightmap_ground)
@@ -68,13 +85,12 @@ class TerrainAnalyser:
         w, d = h.shape
         acc = np.zeros((w, d), dtype=np.float32)
 
-        # Interior comparisons — slice-based
-        acc[:-1, :] += (np.abs(h[:-1, :] - h[1:, :]) <= 1).astype(np.float32)   # down
-        acc[1:,  :] += (np.abs(h[1:,  :] - h[:-1, :]) <= 1).astype(np.float32)  # up
-        acc[:, :-1] += (np.abs(h[:, :-1] - h[:, 1:]) <= 1).astype(np.float32)   # right
-        acc[:, 1:]  += (np.abs(h[:, 1:]  - h[:, :-1]) <= 1).astype(np.float32)  # left
+        acc[:-1, :] += (np.abs(h[:-1, :] - h[1:,  :]) <= 1).astype(np.float32)
+        acc[1:,  :] += (np.abs(h[1:,  :] - h[:-1, :]) <= 1).astype(np.float32)
+        acc[:, :-1] += (np.abs(h[:, :-1] - h[:, 1:])  <= 1).astype(np.float32)
+        acc[:, 1:]  += (np.abs(h[:, 1:]  - h[:, :-1]) <= 1).astype(np.float32)
 
-        # Normalise by actual neighbour count (corners have 2, edges 3, interior 4)
+        # Normalise by actual neighbour count (corners=2, edges=3, interior=4)
         neighbour_count = np.ones((w, d), dtype=np.float32) * 4
         neighbour_count[0,  :] -= 1
         neighbour_count[-1, :] -= 1
@@ -90,9 +106,7 @@ class TerrainAnalyser:
         self.expansion = uniform_filter(flat, size=size)
 
     def _compute_biome_score(self) -> None:
-        """
-        Map biome string array to float scores using a vectorised unique-lookup.
-        """
+        """Map biome string array to float scores using a vectorised unique-lookup."""
         unique_biomes, inverse = np.unique(self.biomes, return_inverse=True)
         weights = np.array(
             [self.config.biome_weights.get(b, 0.5) for b in unique_biomes],
@@ -101,28 +115,29 @@ class TerrainAnalyser:
         self.biome_score = weights[inverse].reshape(self.biomes.shape)
 
     def _compute_water(self) -> None:
-        """
-        Identify water cells and compute distance to nearest water for each cell.
-        """
+        """Identify water cells and compute distance to nearest water."""
         self.water_mask = self.heightmap_surface != self.heightmap_ocean_floor
         self.water_distances = distance_transform_edt(~self.water_mask).astype(np.float32)
 
     def _compute_roughness(self) -> None:
-        """
-        Local height range using C-level max/min filters for efficiency.
-        """
+        """Local height range using C-level max/min filters for efficiency."""
         size = 2 * self.config.radius + 1
         self.roughness_map = (
             maximum_filter(self.heightmap_ground, size=size) -
             minimum_filter(self.heightmap_ground, size=size)
-        )
+        ).astype(np.float32)
 
+    # ------------------------------------------------------------------
     # Public entry point
+    # ------------------------------------------------------------------
 
     def compute_scores(self) -> None:
         """
         Compute all terrain metrics and a combined suitability score map.
+
         This is the only method that should be called externally.
+        After this call, all output attributes are populated and `scores`
+        is normalised to [0, 1].
         """
         self._compute_slope()
         self._compute_flatness()
@@ -140,8 +155,8 @@ class TerrainAnalyser:
             (self.heightmap_surface - self.heightmap_ground) / self.config.forest_scale,
             0, 1,
         )
-        slope_penalty  = np.clip(self.slope_map / self.config.slope_scale, 0, 1)
-        water_penalty  = self.water_mask.astype(np.float32)
+        slope_penalty = np.clip(self.slope_map  / self.config.slope_scale, 0, 1)
+        water_penalty = self.water_mask.astype(np.float32)
 
         max_h = float(np.max(self.heightmap_ground))
         elevation = (
@@ -149,14 +164,22 @@ class TerrainAnalyser:
             else np.zeros_like(self.heightmap_ground)
         )
 
-        self.scores = (
-            1.5 * self.flatness +
-            2.0 * self.accessibility +
-            2.0 * self.expansion +
-            0.5 * self.biome_score +
-            0.8 * elevation +
-            0.8 * water_proximity_bonus -
-            1.0 * water_penalty -
-            2.0 * forest_penalty -
-            2.0 * slope_penalty
+        raw = (
+            1.5 * self.flatness
+            + 2.0 * self.accessibility
+            + 2.0 * self.expansion
+            + 0.5 * self.biome_score
+            + 0.8 * elevation
+            + 0.8 * water_proximity_bonus
+            - 1.0 * water_penalty
+            - 2.0 * forest_penalty
+            - 2.0 * slope_penalty
         )
+
+        # Normalise to [0, 1] so WorldAnalysisResult.scores matches its contract.
+        r_min = float(raw.min())
+        r_max = float(raw.max())
+        if r_max > r_min:
+            self.scores = ((raw - r_min) / (r_max - r_min)).astype(np.float32)
+        else:
+            self.scores = np.zeros_like(raw, dtype=np.float32)

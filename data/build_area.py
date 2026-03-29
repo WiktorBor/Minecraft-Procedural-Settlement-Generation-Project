@@ -44,9 +44,9 @@ class BuildArea:
     def contains(self, x: int, y: int, z: int) -> bool:
         """Return True if the world coordinate (x, y, z) is inside this area."""
         return (
-            self.x_from <= x <= self.x_to and
-            self.y_from <= y <= self.y_to and
-            self.z_from <= z <= self.z_to
+            self.x_from <= x <= self.x_to
+            and self.y_from <= y <= self.y_to
+            and self.z_from <= z <= self.z_to
         )
 
     def contains_xz(self, x: int, z: int) -> bool:
@@ -88,10 +88,6 @@ class BuildArea:
                 f"[0, {self.width}) x [0, {self.depth})"
             )
         return self.x_from + i, self.z_from + j
-
-    # ------------------------------------------------------------------
-    # Display
-    # ------------------------------------------------------------------
 
     def __str__(self) -> str:
         return (

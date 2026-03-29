@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import math
 import logging
-from collections.abc import Iterable
+import math
 
 import numpy as np
 
 from data.analysis_results import WorldAnalysisResult
 from data.configurations import SettlementConfig
-from data.settlement_entities import District, Districts, Plot, RoadCell
+from data.settlement_entities import Plot
 from utils.poisson_disk import poisson_disk
 
 logger = logging.getLogger(__name__)
@@ -23,27 +22,26 @@ class PlotPlanner:
     def __init__(
         self,
         analysis: WorldAnalysisResult,
-        districts: Districts,
-        roads: Iterable[RoadCell],
+        districts,
+        taken: set[tuple[int, int]],
         config: SettlementConfig,
     ) -> None:
         self.analysis  = analysis
         self.districts = districts
-        self.roads     = frozenset(roads)   # O(1) membership, immutable
         self.config    = config
 
-        # Pre-build a boolean grid of road cells in local index space so that
-        # road-overlap checks in _valid() are a single numpy slice rather than
-        # an O(plot_w * plot_d) Python loop.
-        shape = (analysis.heightmap_ground.shape[0], analysis.heightmap_ground.shape[1])
-        self._road_mask: np.ndarray = np.zeros(shape, dtype=bool)
+        # Pre-build a boolean grid of taken cells in local index space so that
+        # overlap checks in _valid() are a single numpy slice rather than an
+        # O(plot_w × plot_d) Python loop.
+        shape = analysis.heightmap_ground.shape
+        self._taken_mask: np.ndarray = np.zeros(shape, dtype=bool)
         _area = analysis.best_area
-        for cell in self.roads:
+        for wx, wz in taken:
             try:
-                li, lj = _area.world_to_index(cell.x, cell.z)
-                self._road_mask[li, lj] = True
+                li, lj = _area.world_to_index(wx, wz)
+                self._taken_mask[li, lj] = True
             except ValueError:
-                pass  # road cell outside best_area — ignore
+                pass  # cell outside best_area — ignore
 
     # ------------------------------------------------------------------
     # Validation
@@ -65,7 +63,6 @@ class PlotPlanner:
         x_end = local_x + plot_w
         z_end = local_z + plot_d
 
-        # Bounds check
         if x_end > self.analysis.heightmap_ground.shape[0]:
             return False
         if z_end > self.analysis.heightmap_ground.shape[1]:
@@ -77,24 +74,15 @@ class PlotPlanner:
         heights   = self.analysis.heightmap_ground[local_x:x_end, local_z:z_end]
 
         if slope.max() > self.config.max_slope:
-            logger.debug("  rejected: slope %.2f > %.2f", float(slope.max()), self.config.max_slope)
             return False
         if roughness.max() > self.config.max_roughness:
-            logger.debug("  rejected: roughness %.2f > %.2f", float(roughness.max()), self.config.max_roughness)
             return False
         if water_d.min() < self.config.min_water_distance:
-            logger.debug("  rejected: water_dist %.2f < %d", float(water_d.min()), self.config.min_water_distance)
             return False
         if heights.max() - heights.min() > self.config.max_height_variation:
-            logger.debug("  rejected: height_var %.2f > %d", float(heights.max() - heights.min()), self.config.max_height_variation)
             return False
-
-        # Road overlap — use pre-built boolean mask (O(1) slice) instead of
-        # a Python double-loop over every cell in the footprint (was O(w*d)).
-        if self._road_mask is not None:
-            if self._road_mask[local_x:x_end, local_z:z_end].any():
-                logger.debug("  rejected: road overlap at local (%d, %d)", local_x, local_z)
-                return False
+        if self._taken_mask[local_x:x_end, local_z:z_end].any():
+            return False
 
         return True
 
@@ -116,42 +104,44 @@ class PlotPlanner:
 
         w, d     = districts_map.shape
         occupied = np.zeros((w, d), dtype=bool)
-
-        plots:        list[Plot]           = []
-        plot_centers: list[tuple[int,int]] = []
+        plots:    list[Plot] = []
 
         for district_idx, dtype in districts_types.items():
+            plot_centers: list[tuple[int, int]] = []
             district_mask = districts_map == district_idx
             if not np.any(district_mask):
                 continue
 
             # Spacing by district type
             min_dist = self.config.min_plot_distance
-            if   dtype == "residential": min_dist = max(2, min_dist // 2)
+            if   dtype == "residential": min_dist = max(6, min_dist // 2)
             elif dtype == "farming":     min_dist = int(min_dist * 1.5)
             elif dtype == "forest":      min_dist = int(min_dist * 2)
 
-            # Bounding box of this district
             xs, zs = np.where(district_mask)
             x_min, x_max = int(xs.min()), int(xs.max())
             z_min, z_max = int(zs.min()), int(zs.max())
             width  = x_max - x_min + 1
             depth  = z_max - z_min + 1
 
-            sample_points = poisson_disk(width=width, height=depth, radius=min_dist)
+            sample_points = poisson_disk(
+                width=width, depth=depth, radius=min_dist
+            )
 
             plot_w   = self.config.plot_width.get(dtype, 8)
             plot_d   = self.config.plot_depth.get(dtype, 8)
             min_size = self.config.min_plot_size.get(dtype, 4)
 
-            # Auto-scale plot size down if the district bounding box is too small
             max_plot = max(min_size, min(width, depth) // 2)
             plot_w   = min(plot_w, max_plot)
             plot_d   = min(plot_d, max_plot)
 
             if plot_w < min_size or plot_d < min_size:
-                logger.debug("District %d (%s): bounding box %dx%d too small for min plot size %d, skipping.",
-                             district_idx, dtype, width, depth, min_size)
+                logger.debug(
+                    "District %d (%s): bounding box %dx%d too small for "
+                    "min plot size %d, skipping.",
+                    district_idx, dtype, width, depth, min_size,
+                )
                 continue
 
             for lx, lz in sample_points:
@@ -166,17 +156,13 @@ class PlotPlanner:
 
                 if occ_slice.shape != (plot_w, plot_d):
                     continue
-                # Reject if any cell is already occupied
                 if np.any(occ_slice):
                     continue
-                # Require at least 50% of the plot to lie within this district
                 if dist_slice.mean() < 0.5:
                     continue
-
                 if not self._valid(local_x, local_z, plot_w, plot_d):
                     continue
 
-                # Cluster distance check
                 cx = local_x + plot_w // 2
                 cz = local_z + plot_d // 2
 
@@ -191,37 +177,39 @@ class PlotPlanner:
                         if np.random.random() < 0.6:
                             continue
 
-                # Mark footprint + buffer as occupied
-                block_r = self.config.min_plot_cluster_distance // 2
+                # Mark footprint + buffer as occupied.
+                # grammar_max accounts for the worst-case dimension the house
+                # grammar can snap to, preventing structure overlap in the world.
+                grammar_max = 11
+                effective_w = max(plot_w, grammar_max)
+                effective_d = max(plot_d, grammar_max)
+                block_r     = self.config.min_plot_cluster_distance // 2
                 occupied[
-                    max(0, local_x - block_r):min(w, local_x + plot_w + block_r),
-                    max(0, local_z - block_r):min(d, local_z + plot_d + block_r),
+                    max(0, local_x - block_r):min(w, local_x + effective_w + block_r),
+                    max(0, local_z - block_r):min(d, local_z + effective_d + block_r),
                 ] = True
 
                 plot_centers.append((cx, cz))
 
                 wx, wz = self.analysis.best_area.index_to_world(local_x, local_z)
 
-                # Use the maximum height across the entire plot footprint as
-                # the base Y. Using the corner height (single cell) caused
-                # houses to be placed at a lower Y than the terrain under
-                # most of the plot, burying the structure in the ground.
-                # Builders use foundation blocks to fill downward from this
-                # height to meet lower terrain cells.
-                plot_heights = self.analysis.heightmap_ground[
-                    local_x:local_x + plot_w,
-                    local_z:local_z + plot_d,
-                ]
-                plot_y = int(plot_heights.max())
+                # Use the maximum height across the plot footprint as the base Y.
+                # Builders fill downward from this height to meet lower terrain cells.
+                plot_y = int(
+                    self.analysis.heightmap_ground[
+                        local_x:local_x + plot_w,
+                        local_z:local_z + plot_d,
+                    ].max()
+                )
 
                 plots.append(Plot(
-                    x=wx,
-                    z=wz,
-                    y=plot_y,
-                    width=plot_w,
-                    depth=plot_d,
+                    x=wx, z=wz, y=plot_y,
+                    width=plot_w, depth=plot_d,
                     type=dtype,
                 ))
 
-        logger.info("Generated %d plots across %d districts.", len(plots), len(districts_types))
+        logger.info(
+            "Generated %d plots across %d districts.",
+            len(plots), len(districts_types),
+        )
         return plots

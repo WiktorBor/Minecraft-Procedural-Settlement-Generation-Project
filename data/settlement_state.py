@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable
 
-from .settlement_entities import Plot, RoadCell, Districts, Building
+from data.settlement_entities import Building, Districts, Plot, RoadCell
 
 
 @dataclass
@@ -11,53 +11,84 @@ class SettlementState:
     """
     Evolving state of the settlement during generation.
 
-    All coordinates are world (x, z).  To access heightmaps or grids,
-    convert with BuildArea.world_to_index(x, z) to obtain local (i, j) indices.
+    All coordinates are world (x, z). Use BuildArea.world_to_index(x, z)
+    to obtain local (i, j) array indices when accessing heightmaps.
 
     Lifecycle
     ---------
-    `center` is None until the site locator has placed the settlement.
-    `districts` is None until the district planner has run.
-    All other collections start empty and are populated incrementally.
+    center      — None until the site locator has run
+    districts   — None until the district planner has run
+    roads       — populated by plan_roads()
+    taken       — fountains registered first, then roads appended automatically
+    plots       — populated by plan_plots() after roads are known
+    buildings   — populated incrementally during structure placement
     """
 
-    # World XZ centre of the settlement — None until site is chosen.
-    center: tuple[int, int] | None = None
+    center:    tuple[int, int] | None = None
+    districts: Districts | None       = None
 
-    # Road cells stored as a set for O(1) membership tests.
+    # Road cells — full RoadCell objects for type queries
     roads: set[RoadCell] = field(default_factory=set)
 
-    # Plots in world coordinates, ordered by insertion.
-    plots: list[Plot] = field(default_factory=list)
+    # O(1) coordinate lookup — mirrors roads but strips type
+    _road_coords: set[tuple[int, int]] = field(default_factory=set)
 
-    # District map and metadata — None until district planner has run.
-    districts: Districts | None = None
+    # All world (x, z) cells physically occupied (fountains + roads + buildings)
+    # PlotPlanner reads this to avoid placing plots on taken ground.
+    taken: set[tuple[int, int]] = field(default_factory=set)
 
-    # Placed building instances in world coordinates.
+    plots:     list[Plot]     = field(default_factory=list)
     buildings: list[Building] = field(default_factory=list)
 
     # ------------------------------------------------------------------
-    # Mutation helpers — prefer these over direct collection access
+    # Mutation helpers
     # ------------------------------------------------------------------
 
+    def add_taken(self, cells: Iterable[tuple[int, int]]) -> None:
+        """Register arbitrary world cells as occupied (fountains, markers, etc.)."""
+        self.taken.update(cells)
+
+    def add_road_cells(self, cells: Iterable[RoadCell]) -> None:
+        """
+        Add road cells to the network.
+
+        Also registers each cell into taken so plot planning
+        automatically avoids road footprints.
+        """
+        for cell in cells:
+            self.roads.add(cell)
+            self._road_coords.add((cell.x, cell.z))
+            self.taken.add((cell.x, cell.z))
+
     def add_plot(self, plot: Plot) -> None:
-        """Append a plot to the settlement."""
+        """Append a validated plot."""
         self.plots.append(plot)
 
     def add_building(self, building: Building) -> None:
-        """Append a building to the settlement."""
+        """Append a placed building."""
         self.buildings.append(building)
 
-    def add_road_cells(self, cells: Iterable[RoadCell]) -> None:
-        """Add road cells (duplicates are silently ignored)."""
-        self.roads.update(cells)
+    # ------------------------------------------------------------------
+    # Road queries
+    # ------------------------------------------------------------------
 
     def has_road(self, x: int, z: int) -> bool:
-        """Return True if (x, z) is part of the road network."""
-        return RoadCell(x, z) in self.roads
+        """Return True if (x, z) is part of the road network (any type). O(1)."""
+        return (x, z) in self._road_coords
+
+    def get_road_type(self, x: int, z: int) -> str | None:
+        """
+        Return the road type at (x, z), or None if no road is present.
+
+        O(n) — only call when the type is actually needed (e.g. road builder).
+        """
+        for cell in self.roads:
+            if cell.x == x and cell.z == z:
+                return cell.type
+        return None
 
     # ------------------------------------------------------------------
-    # Convenience queries
+    # Convenience properties
     # ------------------------------------------------------------------
 
     @property
@@ -81,7 +112,8 @@ class SettlementState:
         return (
             f"SettlementState("
             f"center={self.center}, "
+            f"districts={len(self.districts.district_list) if self.districts else 0}, "
+            f"roads={self.road_cell_count}, "
             f"plots={self.plot_count}, "
-            f"buildings={self.building_count}, "
-            f"road_cells={self.road_cell_count})"
+            f"buildings={self.building_count})"
         )
