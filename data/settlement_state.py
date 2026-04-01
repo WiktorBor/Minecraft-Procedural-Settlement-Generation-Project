@@ -27,6 +27,10 @@ class SettlementState:
     center:    tuple[int, int] | None = None
     districts: Districts | None       = None
 
+    # Central plaza — set after plaza placement (None if settlement is too small)
+    plaza_center: tuple[int, int] | None = None
+    plaza_radius: int                    = 0
+
     # Road cells — full RoadCell objects for type queries
     roads: set[RoadCell] = field(default_factory=set)
 
@@ -40,21 +44,12 @@ class SettlementState:
     plots:     list[Plot]     = field(default_factory=list)
     buildings: list[Building] = field(default_factory=list)
 
-    # ------------------------------------------------------------------
-    # Mutation helpers
-    # ------------------------------------------------------------------
-
     def add_taken(self, cells: Iterable[tuple[int, int]]) -> None:
         """Register arbitrary world cells as occupied (fountains, markers, etc.)."""
         self.taken.update(cells)
 
     def add_road_cells(self, cells: Iterable[RoadCell]) -> None:
-        """
-        Add road cells to the network.
-
-        Also registers each cell into taken so plot planning
-        automatically avoids road footprints.
-        """
+        """Add road cells and register them in taken."""
         for cell in cells:
             self.roads.add(cell)
             self._road_coords.add((cell.x, cell.z))
@@ -68,28 +63,16 @@ class SettlementState:
         """Append a placed building."""
         self.buildings.append(building)
 
-    # ------------------------------------------------------------------
-    # Road queries
-    # ------------------------------------------------------------------
-
     def has_road(self, x: int, z: int) -> bool:
         """Return True if (x, z) is part of the road network (any type). O(1)."""
         return (x, z) in self._road_coords
 
     def get_road_type(self, x: int, z: int) -> str | None:
-        """
-        Return the road type at (x, z), or None if no road is present.
-
-        O(n) — only call when the type is actually needed (e.g. road builder).
-        """
+        """Return the road type at (x, z), or None. O(n)."""
         for cell in self.roads:
             if cell.x == x and cell.z == z:
                 return cell.type
         return None
-
-    # ------------------------------------------------------------------
-    # Convenience properties
-    # ------------------------------------------------------------------
 
     @property
     def is_placed(self) -> bool:

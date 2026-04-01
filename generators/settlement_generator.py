@@ -1,22 +1,21 @@
 """SettlementGenerator — builds districts, plots, roads, and structures."""
 from __future__ import annotations
 
-
 import logging
-import numpy as np
 
+import numpy as np
 from gdpc.editor import Editor
 
 from data.analysis_results import WorldAnalysisResult
 from data.biome_palettes import BiomePalette, get_biome_palette
 from data.configurations import SettlementConfig, TerrainConfig
-from data.settlement_entities import Building
+from data.settlement_entities import Building, Plot, RoadCell
 from data.settlement_state import SettlementState
+from structures.misc.square_centre import SquareCentre
 from planning.palette_mapper import PaletteMapper
 from planning.settlement_planner import SettlementPlanner
-from structures.base.registry import get_structure
 from structures.base.structure_selector import StructureSelector
-from structures.decoration.district_marker import DistrictMarker
+from structures.decoration.district.district_marker import DistrictMarker
 from structures.fortification.fortification_builder import FortificationBuilder
 from world_interface.road_placer import RoadBuilder
 from world_interface.terrain_clearer import remove_sparse_top, seal_cave_openings, clear_area
@@ -121,6 +120,47 @@ class SettlementGenerator:
         fountain_cells = district_marker.build(state.districts)
         state.add_taken(fountain_cells)
 
+        # --- Phase 3a.5: Central plaza ---
+        # Plaza center and radius were pre-computed in plan_districts() so that
+        # the district planner could exclude the plaza area from district assignment.
+        plaza_radius = state.plaza_radius
+
+        if plaza_radius > 0:
+            cx, cz = state.plaza_center
+            logger.info(
+                "[Phase 3a.5] Placing %s plaza (radius=%d) at (%d, %d)...",
+                "big" if plaza_radius >= 8 else "small", plaza_radius, cx, cz,
+            )
+            area   = self.analysis.best_area
+            li, lj = area.world_to_index(cx, cz)
+            cy     = int(self.analysis.heightmap_ground[li, lj])
+
+            plaza_plot = Plot(
+                x=cx - plaza_radius, z=cz - plaza_radius,
+                width=plaza_radius * 2, depth=plaza_radius * 2, y=cy,
+            )
+            SquareCentre().build(self.editor, plaza_plot, palette=default_palette)
+            logger.info("  ✓ Plaza structure placed at (%d, %d).", cx, cz)
+
+            # Block everything from the plaza centre out to the ring road
+            # centre-line so no plot can squeeze into the gap between the
+            # plaza circle and the ring road.
+            road_width  = self.settlement_config.road_width
+            ring_radius = plaza_radius + road_width + 1
+            excl_sq     = ring_radius ** 2
+            plaza_taken = {
+                (cx + dx, cz + dz)
+                for dx in range(-ring_radius, ring_radius + 1)
+                for dz in range(-ring_radius, ring_radius + 1)
+                if dx ** 2 + dz ** 2 <= excl_sq
+            }
+            state.add_taken(plaza_taken)
+
+            # Circular ring road around the plaza
+            ring_cells = self._generate_ring_road(cx, cz, plaza_radius)
+            state.add_road_cells(ring_cells)
+            logger.info("  ✓ Ring road generated (%d cells).", len(ring_cells))
+
         # --- Phase 3b: Road planning ---
         self.planner.plan_roads(state)
         road_builder = RoadBuilder(
@@ -155,7 +195,6 @@ class SettlementGenerator:
         )
 
         # One StructureSelector per district, each carrying its own palette
-        _fallback_palette = next(iter(district_palettes.values()))
         selectors: dict[int, StructureSelector] = {
             idx: StructureSelector(
                 editor=self.editor,
@@ -229,11 +268,7 @@ class SettlementGenerator:
             )
             clear_area(self.editor, self.analysis, plot, self.terrain_config)
 
-            if template_key in ("farm", "decoration"):
-                pal = district_palettes.get(district_idx, _fallback_palette)
-                get_structure(template_key)(self.editor, self.analysis, pal).build(plot)
-            else:
-                selector.build(plot, template_key)
+            selector.build(plot, template_key)
 
             placed_footprints.append((px1, pz1, px2, pz2))
             state.add_building(Building(
@@ -262,12 +297,42 @@ class SettlementGenerator:
 
         return state
 
+    def _generate_ring_road(
+        self,
+        cx: int,
+        cz: int,
+        plaza_radius: int,
+    ) -> list[RoadCell]:
+        """
+        Return RoadCells forming a circular ring around the plaza.
+
+        The ring centre-line sits at plaza_radius + road_width + 1 from (cx, cz),
+        with thickness equal to road_width so it matches the rest of the network.
+        """
+        road_width  = self.settlement_config.road_width
+        ring_radius = plaza_radius + road_width + 1
+        half        = road_width // 2
+        inner_sq    = (ring_radius - half) ** 2
+        outer_sq    = (ring_radius + half) ** 2
+
+        area  = self.analysis.best_area
+        cells: set[tuple[int, int]] = set()
+
+        for dx in range(-(ring_radius + half + 1), ring_radius + half + 2):
+            for dz in range(-(ring_radius + half + 1), ring_radius + half + 2):
+                dist_sq = dx ** 2 + dz ** 2
+                if inner_sq <= dist_sq <= outer_sq:
+                    wx, wz = cx + dx, cz + dz
+                    if area.contains_xz(wx, wz):
+                        cells.add((wx, wz))
+
+        return [RoadCell(wx, wz, type="main_road") for wx, wz in cells]
+
     def _recompute_terrain_maps(self) -> None:
         """
         Recompute slope_map and roughness_map from the current heightmap_ground.
         Called after terrain cleanup so planners see corrected terrain metrics.
         """
-        import numpy as np
         from scipy.ndimage import maximum_filter, minimum_filter
 
         h    = self.analysis.heightmap_ground.astype(np.float32)
@@ -279,4 +344,3 @@ class SettlementGenerator:
         self.analysis.roughness_map = (
             maximum_filter(h, size=size) - minimum_filter(h, size=size)
         )
-

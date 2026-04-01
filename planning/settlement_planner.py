@@ -40,10 +40,6 @@ class SettlementPlanner:
         self.analysis = analysis
         self.config   = config
 
-    # ------------------------------------------------------------------
-    # Quick pipeline
-    # ------------------------------------------------------------------
-
     def plan(self) -> SettlementState:
         """
         Run districts → roads → plots without any mid-step intervention.
@@ -58,10 +54,6 @@ class SettlementPlanner:
         self.plan_plots(state)
         return state
 
-    # ------------------------------------------------------------------
-    # Split pipeline
-    # ------------------------------------------------------------------
-
     def plan_districts(self) -> SettlementState:
         """
         Phase 1: choose settlement centre and generate Voronoi districts.
@@ -75,10 +67,39 @@ class SettlementPlanner:
         state.center = self._choose_center()
         logger.info("Settlement centre: %s", state.center)
 
+        # Pre-compute plaza size so DistrictPlanner can exclude the plaza
+        # area from district assignment before districts are created.
+        # Scale directly from the shortest side of best_area:
+        #   radius = short_side // 10, capped at 15.
+        #   radius < 3  → settlement too small, no plaza.
+        #   radius 3–7  → small plaza (SquareCentre small_fountain style).
+        #   radius ≥ 8  → big plaza   (SquareCentre grand_spire style).
+        area  = self.analysis.best_area
+        w, d  = area.width, area.depth
+        plaza_radius = min(min(w, d) // 10, 15)
+        if plaza_radius < 3:
+            plaza_radius = 0
+
+        if plaza_radius > 0:
+            cx_w = (area.x_from + area.x_to) // 2
+            cz_w = (area.z_from + area.z_to) // 2
+            state.plaza_center = (cx_w, cz_w)
+            state.plaza_radius = plaza_radius
+
+            # Exclusion radius covers plaza + gap + ring road outer edge
+            road_width   = self.config.road_width
+            excl_radius  = plaza_radius + road_width + 1 + road_width // 2
+            excl_center  = (w // 2, d // 2)   # local-index centre of best_area
+        else:
+            excl_center = None
+            excl_radius = 0
+
         logger.info("Planning districts...")
         district_planner = DistrictPlanner(
             analysis=self.analysis,
             config=self.config,
+            exclusion_center=excl_center,
+            exclusion_radius=excl_radius,
         )
         state.districts = district_planner.generate()
         logger.info("Generated %d districts.", len(state.districts.district_list))
@@ -96,10 +117,16 @@ class SettlementPlanner:
         Mutates state in-place.
         """
         logger.info("Planning roads...")
+        hub = (
+            (float(state.plaza_center[0]), float(state.plaza_center[1]))
+            if state.plaza_center is not None
+            else None
+        )
         road_planner = RoadPlanner(
             analysis=self.analysis,
             districts=state.districts,
             config=self.config,
+            hub_point=hub,
         )
         roads = road_planner.generate()
         state.add_road_cells(roads)
@@ -122,8 +149,6 @@ class SettlementPlanner:
         for plot in plot_planner.generate():
             state.add_plot(plot)
         logger.info("Generated %d plots.", state.plot_count)
-
-    # ------------------------------------------------------------------
 
     def _choose_center(self) -> tuple[int, int]:
         """Return the world (x, z) coordinate of the highest-scoring cell."""

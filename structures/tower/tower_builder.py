@@ -1,27 +1,40 @@
+"""Reusable square stone tower builder used by fortification corners and standalone tower plots."""
 from __future__ import annotations
-
-import logging
-import random
 
 from gdpc import Block
 from gdpc.editor import Editor
-import gdpc.geometry as geo
 
 from data.biome_palettes import BiomePalette, palette_get
-from data.settlement_entities import Plot
-
-logger = logging.getLogger(__name__)
+from structures.base.build_context import BuildContext
+from structures.base.primitives import (
+    add_door,
+    add_windows,
+    build_belfry,
+    build_ceiling,
+    build_floor,
+    build_foundation,
+    build_log_belt,
+    build_walls,
+)
+from structures.misc.spire_tower import _build_steep_spire
 
 
 class TowerBuilder:
     """
-    Medieval corner tower with:
-    - Hollow walls, embedded foundation
-    - Pyramid / hipped roof built from stair layers
-    - Proper crenellated parapet (full merlons, not single blocks)
-    - Arrow-slit windows at two heights
-    - Banner/flag on top
-    - Palette-driven throughout
+    Builds a square stone tower at an absolute world position.
+
+    Stone base (h blocks) → log transition belt → open belfry with arched
+    openings → plank platform with hanging lantern → steep tapering spire.
+
+    Args:
+        editor:       GDPC editor instance.
+        palette:      Biome palette for material lookups.
+        height:       Stone base height (blocks y+1 … y+height, plus ceiling
+                      at y+height+1).  Default 8.
+        width:        Square footprint side length (min 5 for belfry arches).
+        with_door:    Place a door on the south face.  Default False.
+        with_windows: Place windows on the walls.  Default False.
+        rotation:     BuildContext rotation (0 / 90 / 180 / 270).
     """
 
     def __init__(
@@ -30,154 +43,70 @@ class TowerBuilder:
         palette: BiomePalette,
         height: int = 8,
         width: int = 5,
+        with_door: bool = False,
+        with_windows: bool = False,
+        rotation: int = 0,
     ) -> None:
-        self.editor  = editor
-        self.palette = palette
-        self.height  = height
-        self.width   = width
-
-    def build(self, plot: Plot) -> None:
-        self._build(plot.x, plot.y, plot.z)
+        self.editor       = editor
+        self.palette      = palette
+        self.height       = height
+        self.width        = width
+        self.with_door    = with_door
+        self.with_windows = with_windows
+        self.rotation     = rotation
 
     def build_at(self, x: int, y: int, z: int) -> None:
-        self._build(x, y, z)
+        """Place the tower with its bottom-left corner at (x, y, z)."""
+        w, h = self.width, self.height
 
-    def _build(self, x: int, y: int, z: int) -> None:
-        w = self.width
-        h = self.height
+        # Plank material from the original palette (before stone override)
+        plank_mat = palette_get(self.palette, "wall", "minecraft:dark_oak_planks")
+        found_mat = palette_get(self.palette, "foundation", "minecraft:stone_bricks")
 
-        wall_block   = self.palette["wall"]
-        floor_block  = self.palette["floor"]
-        accent_block = self.palette["accent"]
-        found_block  = self.palette["foundation"]
-        roof_block   = self.palette["roof"]
-        light_block  = palette_get(self.palette, "light",     "minecraft:lantern")
-        window_block = palette_get(self.palette, "window",    "minecraft:iron_bars")
-        door_block   = palette_get(self.palette, "door",      "minecraft:oak_door")
-        slab_block   = palette_get(self.palette, "roof_slab", "minecraft:cobblestone_slab")
+        # Stone palette: wall/floor/foundation → stone; ceiling uses lantern
+        stone_pal = dict(self.palette)
+        stone_pal["wall"]           = found_mat
+        stone_pal["floor"]          = found_mat
+        stone_pal["foundation"]     = found_mat
+        stone_pal["ceiling_slab"]   = "minecraft:stone_brick_slab"
+        stone_pal["accent_beam"]    = "minecraft:stripped_dark_oak_log"
+        stone_pal["interior_light"] = "minecraft:lantern"
 
-        light_props = {"hanging": "false"} if "lantern" in light_block else {}
+        ctx = BuildContext(self.editor, stone_pal, rotation=self.rotation,
+                           origin=(x, y, z), size=(w, w))
 
-        # Foundation
-        geo.placeCuboid(
-            self.editor,
-            (x, y - 2, z), (x + w - 1, y - 1, z + w - 1),
-            Block(found_block),
-        )
+        # Height milestones (same convention as Tower / SpireTower)
+        base_top   = y + h          # ceiling layer
+        belt_y     = base_top + 1   # log transition ring
+        belfry_h   = 4
+        belfry_y   = belt_y + 1     # open belfry starts
+        belfry_top = belfry_y + belfry_h  # plank platform
+        spire_y    = belfry_top + 1
 
-        # Hollow body
-        geo.placeCuboidHollow(
-            self.editor,
-            (x, y, z), (x + w - 1, y + h - 1, z + w - 1),
-            Block(wall_block),
-        )
+        with ctx.push():
+            build_foundation(ctx, x, y, z, w, w)
+            build_floor(ctx,      x, y, z, w, w)
+            build_walls(ctx,      x, y, z, w, h, w)
+            build_ceiling(ctx,    x, base_top, z, w, w, floor_y=y)
 
-        # Floors
-        geo.placeCuboid(
-            self.editor,
-            (x, y, z), (x + w - 1, y, z + w - 1),
-            Block(floor_block),
-        )
-        mid_y = y + h // 2
-        geo.placeCuboid(
-            self.editor,
-            (x + 1, mid_y, z + 1), (x + w - 2, mid_y, z + w - 2),
-            Block(floor_block),
-        )
+            if self.with_door:
+                add_door(ctx, x, y, z, w, facing="south")
+            if self.with_windows:
+                add_windows(ctx, x, y,     z, w, w)
+                add_windows(ctx, x, y + 5, z, w, w)
 
-        # Pyramid roof (stair layers stepping inward)
-        roof_base = y + h
-        peak      = w // 2
-        for layer in range(peak):
-            rx0 = x + layer
-            rz0 = z + layer
-            rx1 = x + w - 1 - layer
-            rz1 = z + w - 1 - layer
-            if rx0 > rx1 or rz0 > rz1:
-                break
-            ry = roof_base + layer
-            for rx in range(rx0, rx1 + 1):
-                self.editor.placeBlock(
-                    (rx, ry, rz0), Block(roof_block, {"facing": "south"})
-                )
-                self.editor.placeBlock(
-                    (rx, ry, rz1), Block(roof_block, {"facing": "north"})
-                )
-            for rz in range(rz0 + 1, rz1):
-                self.editor.placeBlock(
-                    (rx0, ry, rz), Block(roof_block, {"facing": "east"})
-                )
-                self.editor.placeBlock(
-                    (rx1, ry, rz), Block(roof_block, {"facing": "west"})
-                )
+            build_log_belt(ctx, x, belt_y,  z, w, w)
+            build_belfry(  ctx, x, belfry_y, z, w, w, h=belfry_h)
 
-        # Flat cap at peak if width is odd
-        if w % 2 == 1:
-            mid = w // 2
-            self.editor.placeBlock(
-                (x + mid, roof_base + peak, z + mid),
-                Block(slab_block, {"type": "top"}),
+            # Plank platform (uses original-palette "wall" material)
+            for dx in range(w):
+                for dz in range(w):
+                    ctx.place_block((x + dx, belfry_top, z + dz), Block(plank_mat))
+
+            # Hanging lantern from platform centre
+            ctx.place_block(
+                (x + w // 2, belfry_top - 1, z + w // 2),
+                Block("minecraft:lantern", {"hanging": "true"}),
             )
 
-        # Parapet below roof: solid course + proper merlons
-        parapet_y = roof_base
-        geo.placeCuboidWireframe(
-            self.editor,
-            (x, parapet_y - 1, z), (x + w - 1, parapet_y - 1, z + w - 1),
-            Block(wall_block),
-        )
-        for i in range(w):
-            for j in range(w):
-                on_edge = (i == 0 or i == w - 1 or j == 0 or j == w - 1)
-                if on_edge and i % 3 != 2 and j % 3 != 2:
-                    self.editor.placeBlock(
-                        (x + i, parapet_y, z + j), Block(accent_block)
-                    )
-
-        # Corner lanterns
-        for lx, lz in [
-            (x,     z    ),
-            (x+w-1, z    ),
-            (x,     z+w-1),
-            (x+w-1, z+w-1),
-        ]:
-            self.editor.placeBlock((lx, parapet_y + 1, lz), Block(light_block, light_props))
-
-        # Arrow slits at lower and upper height
-        door_x = x + w // 2
-        for slit_y in [y + h // 3, y + (h * 2) // 3]:
-            for wx_, wz_ in [
-                (door_x,    z        ),
-                (door_x,    z + w - 1),
-                (x,         z + w // 2),
-                (x + w - 1, z + w // 2),
-            ]:
-                self.editor.placeBlock((wx_, slit_y, wz_), Block(window_block))
-
-        # Door
-        self.editor.placeBlock(
-            (door_x, y + 1, z),
-            Block(door_block, {"facing": "south", "half": "lower", "hinge": "left"}),
-        )
-        self.editor.placeBlock(
-            (door_x, y + 2, z),
-            Block(door_block, {"facing": "south", "half": "upper", "hinge": "left"}),
-        )
-
-        # Ladder on back wall
-        geo.placeLine(
-            self.editor,
-            (door_x, y + 1, z + w - 1),
-            (door_x, y + h - 1, z + w - 1),
-            Block("minecraft:ladder", {"facing": "south"}),
-        )
-
-        # Banner/flag on roof peak
-        flag_y  = roof_base + peak + (1 if w % 2 == 1 else 0)
-        color   = random.choice(["purple", "blue", "red", "white"])
-        self.editor.placeBlock(
-            (x + w // 2, flag_y, z + w // 2),
-            Block(f"minecraft:{color}_banner", {"rotation": "0"}),
-        )
-
-        logger.debug("Tower built at (%d,%d,%d) h=%d w=%d.", x, y, z, h, w)
+            _build_steep_spire(ctx, x, spire_y, z, w, w)

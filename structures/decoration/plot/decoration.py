@@ -4,13 +4,13 @@ from gdpc.editor import Editor
 
 from data.biome_palettes import BiomePalette
 from data.settlement_entities import Plot
-from structures.farm.farm_builder import FarmBuilder
+from structures.decoration.plot.decoration_builder import DecorationBuilder
 
 
-class Farm:
+class Decoration:
     """
-    A medieval farm — flat basin with timber frame, water channel, and crops.
-    Placed on 'farming' district plots.
+    A purely aesthetic medieval decoration — well or fountain.
+    Placed on decoration district plots.
     """
 
     def build(
@@ -20,4 +20,4 @@ class Farm:
         palette: BiomePalette,
         rotation: int = 0,
     ) -> None:
-        FarmBuilder(editor, palette).build(plot)
+        DecorationBuilder(editor, palette).build(plot)

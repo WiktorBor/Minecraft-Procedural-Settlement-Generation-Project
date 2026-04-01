@@ -1,129 +1,342 @@
-graph TD
-    subgraph _analysis
-        world_analysis["world_analysis.py"]
+flowchart TD
+    subgraph ENTRY["Entry Point"]
+        main["main.py 
+        main() 
+        plot_analysis()  
+        visualize_in_world()"]
     end
 
-    subgraph _data
-        analysis_results["analysis_results.py"]
-        build_area["build_area.py"]
-        settlement_state["settlement_state.py"]
-        settlement_entities["settlement_entities.py"]
-        settlement_configurations["settlement_configurations.py"]
+    subgraph ANALYSIS["analysis/ — World Analysis"]
+        WA["world_analysis.py
+        WorldAnalyser
+        prepare()"]
+        FE["fetcher.py
+        WorldFetcher
+        fetch_build_area()
+        fetch_heightmaps()
+        fetch_biomes()"]
+        AN["analyser.py
+        TerrainAnalyser
+        compute_scores()
+        _compute_flatness()
+        _compute_slope()
+        _compute_water()"]
+        PS["patch_selector.py
+        PatchSelector
+        select_best_patch()"]
+        WA --> FE
+        WA --> AN
+        WA --> PS
     end
 
-    subgraph _generators
-        generators_init["__init__.py"]
-        settlement_generator["settlement_generator.py"]
+    subgraph DATA["data/ — Data Structures"]
+        AR["analysis_results.py
+        WorldAnalysisResult"]
+        BE["settlement_entities.py
+        Plot · Building
+        District · Districts
+        RoadCell"]
+        SS["settlement_state.py
+        SettlementState
+        add_taken()
+        add_road_cells()
+        add_plot()"]
+        CFG["configurations.py
+        SettlementConfig
+        TerrainConfig
+        DistrictRule"]
+        BP["biome_palettes.py
+        BiomePalette
+        get_biome_palette()
+        palette_get()"]
+        BA["build_area.py
+        BuildArea
+        world_to_index()
+        index_to_world()"]
+        MF["material_families.py
+        BIOMe_ID_MAP
+        BLOCK_VALUES
+        MATERIAL_FAMILIES"]
     end
 
-    subgraph _pathfinding
-        pathfinding_init["__init__.py"]
-        astar["astar.py"]
-        pathway_builder["pathway_builder.py"]
+    subgraph AI["ai/ — Decision Systems"]
+        MDP["district_mdp.py
+        DistrictMDP
+        thresholds_from_terrain()"]
     end
 
-    subgraph _planning
-        planning_init["__init__.py"]
-        site_locator["site_locator.py"]
+    subgraph PLANNING["planning/ — Settlement Planning"]
+        SP["settlement_planner.py
+        SettlementPlanner
+        plan()
+        plan_districts()
+        plan_roads()
+        plan_plots()"]
+        DP["settlement/district_planner.py
+        DistrictPlanner
+        generate()
+        _assign_type()
+        _get_score_map()"]
+        RP["infrastructure/road_planner.py
+        RoadPlanner
+        generate()"]
+        PP["settlement/plot_planner.py
+        PlotPlanner
+        generate()
+        _valid()"]
+        PM["palette_mapper.py
+        PaletteMapper
+        generate()
+        dominant_biome()
+        _generate_palettes()"]
+        SP --> DP
+        SP --> RP
+        SP --> PP
     end
 
-    subgraph _settlement
-        district_planner["distric_planner.py"]
-        plot_planner["plot_planner.py"]
-        road_planner["road_planner.py"]
-        settlement_planner["settlement_planner.py"]
+    subgraph UTILS["utils/ — Algorithms & Utilities"]
+        ASTAR["astar.py
+        find_path()"]
+        MST["mst.py
+        mst_edges()"]
+        PD["poisson_disk.py
+        poisson_disk()"]
+        PATH["path_utils.py
+        expand_path_to_width()"]
+        WALK["walkable_grid.py
+        build_cost_grid()"]
+        GEO["geometry.py
+        center_distance()
+        areas_overlap()"]
+        TU["terrain_utils.py
+        get_area_slice()"]
+        HTTP["http_client.py
+        GDMCClient"]
+        IFACE["interfaces.py
+        TerrainLoaderProtocol"]
     end
 
-    subgraph _structures
-        subgraph base
-            structure_agent["structure_agent.py"]
-            structure["structure.py"]
+    subgraph GEN["generators/ — Orchestrator"]
+        SG["settlement_generator.py
+        SettlementGenerator
+        generate()
+        _generate_ring_road()
+        _recompute_terrain_maps()"]
+    end
+
+    subgraph STRUCTURES["structures/ — Building Placement"]
+        subgraph BASE["base/ — Abstractions"]
+            STR["structure.py
+            Structure (ABC)
+            build() abstract"]
+            AGENT["structure_agent.py
+            StructureAgent (ABC)
+            extract_patch()
+            compute_slope()
+            decide() 
+            abstract"]
+            SEL["structure_selector.py
+            StructureSelector
+            _QuickAgent
+            select()
+            build()
+            _pick_template()"]
+            REG["registry.py
+            STRUCTURES dict
+            get_structure()"]
+            CTX["build_context.py
+            BuildContext
+            place_light()
+            push()"]
+            PRIM["primitives.py
+            placeCuboid()
+            build_pyramid()"]
         end
-        subgraph house
-            components["components.py"]
-            house_agent["house_agent.py"]
-            house_builder["house_builder.py"]
-            house_file["house.py"]
+
+        subgraph HOUSE["house/ — Procedural Houses"]
+            H["house.py
+            House · HouseAgent"]
+            HG["house_grammar.py
+            HouseGrammar
+            build()
+            build_at()"]
+            HB["house_body_builder.py
+            BodyBuilder"]
+            HD["house_detail_builder.py
+            DetailBuilder"]
+            HC["house_context.py
+            Ctx"]
+            HS["house_scorer.py
+            HouseParams
+            HouseScorer"]
+            HN["house_ngram_scorer.py
+            HouseNgramScorer
+            BlockSequenceRecorder"]
+            H --> HG
+            HG --> HB
+            HG --> HD
+            HG --> HC
+            HG --> HS
+            HG --> HN
         end
-        structures_init["__init__.py"]
-        registry["registry.py"]
+
+        subgraph ROOFS["roofs/"]
+            RB["roof_builder.py
+            build_roof()"]
+        end
+
+        subgraph FARM["farm/"]
+            FB["farm_builder.py
+            FarmBuilder
+            build()"]
+        end
+
+        subgraph TOWER["tower/"]
+            TW["tower.py
+            Tower
+            build()"]
+            TB["tower_builder.py
+            TowerBuilder
+            build_at()"]
+            TW --> TB
+        end
+
+        subgraph MISC["misc/ — Specialty Buildings"]
+            BK["blacksmith.py
+            Blacksmith"]
+            MK["market_stall.py
+            MarketStall"]
+            CK["clock_tower.py
+            ClockTower"]
+            TV["tavern.py
+            Tavern"]
+            SP2["spire_tower.py
+            SpireTower"]
+            SQ["square_center.py
+            SquareCentre
+            build()"]
+            FORT["fortification_builder.py
+            FortificationBuilder"]
+        end
+
+        subgraph DECO["decoration/"]
+            subgraph DECOPLOT["plot/ — Per-plot"]
+                DEC["decoration.py
+                Decoration"]
+                DECB["decoration_builder.py
+                DecorationBuilder
+                build()
+                _build_well()
+                _build_fountain()"]
+                DEC --> DECB
+            end
+            subgraph DECODIST["district/ — Per-district"]
+                DM["district_marker.py
+                DistrictMarker
+                build()"]
+            end
+        end
+
+        SEL --> H
+        SEL --> FB
+        SEL --> TW
+        SEL --> BK
+        SEL --> MK
+        SEL --> CK
+        SEL --> TV
+        SEL --> SP2
+        SEL --> DECB
+        REG --> H
+        HG --> RB
     end
 
-    subgraph _utils
-        utils_init["__init__.py"]
-        block_utils["block_utils.py"]
-        http_client["http_client.py"]
-        terrain_utils["terrain_utils.py"]
+    subgraph WORLD["world_interface/ — Minecraft Integration"]
+        TL["terrain_loader.py
+        TerrainLoader
+        get_build_area()
+        get_heightmap()
+        get_biomes()"]
+        RL["road_placer.py
+        RoadBuilder
+        build()"]
+        TF["terraforming.py
+        terraform_area()
+        flatten_area()
+        fill_all_holes()"]
+        TC["terrain_clearer.py
+        clear_area()
+        remove_sparse_top()
+        seal_cave_openings()"]
     end
 
-    main_py["main.py"]
+    %% Entry → subsystems
+    main --> WA
+    main --> SG
+    main --> TL
 
-    %% main.py dependencies
-    main_py --> settlement_generator
-    main_py --> settlement_configurations
-    main_py --> settlement_state
-    main_py --> world_analysis
-    main_py --> http_client
+    %% Analysis outputs
+    WA --> AR
 
-    %% settlement_generator.py dependencies
-    settlement_generator --> site_locator
-    settlement_generator --> registry
-    settlement_generator --> pathway_builder
-    settlement_generator --> settlement_planner
+    %% Analysis uses utils
+    FE --> IFACE
+    TU --> BA
+    WA --> TU
 
-    %% settlement_planner.py dependencies
-    settlement_planner --> road_planner
-    settlement_planner --> plot_planner
-    settlement_planner --> district_planner
+    %% TL uses utils
+    TL --> HTTP
+    TL --> IFACE
 
-    %% road_planner.py dependencies
-    road_planner --> settlement_entities
+    %% Generator orchestrates everything
+    SG --> SP
+    SG --> PM
+    SG --> SEL
+    SG --> DM
+    SG --> FORT
+    SG --> SQ
+    SG --> RL
+    SG --> TF
+    SG --> TC
 
-    %% plot_planner.py dependencies
-    plot_planner --> settlement_entities
+    %% Planning uses AI + utils
+    DP --> MDP
+    DP --> PD
+    RP --> ASTAR
+    RP --> MST
+    RP --> PATH
+    RP --> WALK
+    PP --> PD
 
-    %% pathway_builder.py dependencies
-    pathway_builder --> astar
-    pathway_builder --> block_utils
-    pathway_builder --> build_area
-    pathway_builder --> analysis_results
+    %% Palette uses data
+    PM --> MF
+    PM --> BP
 
-    %% site_locator.py dependencies
-    site_locator --> build_area
+    %% Data flows into everything
+    AR --> WA
+    BE --> SS
+    CFG --> AN
+    CFG --> SP
+    CFG --> DP
+    CFG --> RP
+    CFG --> SEL
+    BP --> PM
+    BP --> DECB
+    BP --> FB
+    BP --> TW
+    BP --> TB
+    BP --> BK
+    BP --> MK
+    BP --> CK
+    BP --> TV
+    BP --> DECB
+    BA --> AR
 
-    %% registry.py dependencies
-    registry --> house_file
+    %% Structure base used by houses
+    STR --> H
+    AGENT --> H
+    CTX --> DECB
 
-    %% house_builder.py dependencies
-    house_builder --> terrain_utils
-    house_builder --> build_area
-    house_builder --> components
-
-    %% house_agent.py dependencies
-    house_agent --> structure_agent
-    house_agent --> build_area
-
-    %% house.py dependencies
-    house_file --> structure
-    house_file --> house_agent
-    house_file --> house_builder
-
-    %% structure_agent.py dependencies
-    structure_agent --> build_area
-
-    %% analysis/world_analysis.py dependencies
-    world_analysis --> http_client
-    world_analysis --> build_area
-    world_analysis --> analysis_results
-
-    %% analysis_results.py dependencies
-    analysis_results --> build_area
-
-    %% settlement_state.py dependencies
-    settlement_state --> settlement_entities
-
-    %% __init__.py files
-    generators_init --> settlement_generator
-    planning_init --> site_locator
-    structures_init --> house_builder
-    utils_init --> block_utils
+    %% World interface uses data
+    TL --> BA
+    RL --> AR
+    TF --> AR
+    TC --> AR

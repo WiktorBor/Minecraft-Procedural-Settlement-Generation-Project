@@ -23,10 +23,6 @@ class StructureAgent(ABC):
     def __init__(self, analysis: WorldAnalysisResult) -> None:
         self.analysis = analysis
 
-    # ------------------------------------------------------------------
-    # Terrain utilities
-    # ------------------------------------------------------------------
-
     def extract_patch(self, plot: Plot, padding: int = 2) -> np.ndarray | None:
         """
         Extract a heightmap patch around the plot, optionally with padding.
@@ -76,10 +72,6 @@ class StructureAgent(ABC):
     def is_flat(self, patch: np.ndarray | None, tolerance: int = 1) -> bool:
         """Return True if the patch height range is within tolerance."""
         return self.compute_slope(patch) <= tolerance
-
-    # ------------------------------------------------------------------
-    # Decision interface
-    # ------------------------------------------------------------------
 
     @abstractmethod
     def decide(self, plot: Plot) -> dict:

@@ -4,8 +4,9 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# Default timeout (seconds) for all requests
-_DEFAULT_TIMEOUT: float = 10.0
+# Default timeout (seconds) for all requests.
+# Heightmap requests over large areas can be slow — 120 s gives plenty of headroom.
+_DEFAULT_TIMEOUT: float = 120.0
 
 # Keys expected in a valid build-area response
 _BUILD_AREA_KEYS: frozenset[str] = frozenset(

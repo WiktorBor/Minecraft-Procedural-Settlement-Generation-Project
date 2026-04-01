@@ -32,10 +32,12 @@ class RoadPlanner:
         analysis: WorldAnalysisResult,
         districts: Districts,
         config: SettlementConfig | None = None,
+        hub_point: tuple[float, float] | None = None,
     ) -> None:
-        self.analysis  = analysis
-        self.districts = districts
-        self.config    = config if config is not None else SettlementConfig()
+        self.analysis   = analysis
+        self.districts  = districts
+        self.config     = config if config is not None else SettlementConfig()
+        self.hub_point  = hub_point  # plaza centre — prepended to MST nodes
 
     def generate(self) -> list[RoadCell]:
         """
@@ -61,11 +63,15 @@ class RoadPlanner:
         costs         = build_cost_grid(self.analysis.water_mask)
         passable_mask = costs < np.inf
 
-        # 1. District centre points in world coordinates
+        # 1. District centre points in world coordinates.
+        #    If a plaza hub is provided, prepend it so the MST connects every
+        #    district to the plaza first (radial spoke pattern).
         connection_points = [
             (d.center_x, d.center_z)
             for d in self.districts.district_list
         ]
+        if self.hub_point is not None:
+            connection_points = [self.hub_point] + connection_points
 
         # 2. MST over district centres
         edges = mst_edges(connection_points)

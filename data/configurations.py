@@ -122,14 +122,32 @@ class TerrainConfig:
     forest_scale:                  float = 5.0
     slope_scale:                   float = 3.0
     radius:                        int   = 5
-    max_slope:                     float = 0.6
-    max_roughness:                 float = 2.0
-    min_patch_size:                int   = 150
-    top_building_score_percentile: float = 0.25
+    # Slope / roughness thresholds for the patch selector (normalised values,
+    # not block counts). 0.6 / 2.0 was too strict — gentle hills near water
+    # failed on a second run after structures slightly raised roughness.
+    # 1.2 / 3.5 accepts any terrain a settlement can reasonably sit on.
+    max_slope:                     float = 1.2
+    max_roughness:                 float = 3.5
+
+    # Minimum contiguous valid cells.  64 guarantees at least an 8x8 footprint.
+    min_patch_size:                int   = 64
+
+    top_building_score_percentile: float = 0.40
+
+    # Water proximity penalty — cells within this many blocks of water get
+    # their score multiplied by water_proximity_score_mult before region
+    # selection, preventing flat shoreline from beating inland land.
+    water_proximity_penalty_cells: int   = 3
+    water_proximity_score_mult:    float = 0.5
 
     # Minimum best-area dimensions — PatchSelector expands to meet these
     min_best_area_width: int = 64
     min_best_area_depth: int = 64
+
+    # Cap the area actually fetched and analysed.  Very large build areas
+    # (e.g. 1001×1001) cause heightmap requests to time out; we only need a
+    # reasonable sub-area centred on the build area to find a good build site.
+    max_analysis_size: int = 256
 
     # Biome suitability weights [0, 1] for placement scoring
     biome_weights: dict[str, float] = field(default_factory=lambda: {
