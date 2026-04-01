@@ -35,6 +35,8 @@ class BiomePalette(TypedDict, total=False):
     ceiling_slab:   str
     accent_beam:    str
     interior_light: str
+    banner:         str
+    roof_block:     str
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +62,8 @@ BIOME_PALETTES: dict[str, BiomePalette] = {
         "moss":           "minecraft:moss_carpet",
         "ceiling_slab":   "minecraft:oak_slab",
         "interior_light": "minecraft:pearlescent_froglight",
+        "banner":         "minecraft:white_banner",
+        "roof_block":     "minecraft:dark_oak_planks",
     },
     "desert": {
         "wall":           "minecraft:sandstone",
@@ -79,6 +83,8 @@ BIOME_PALETTES: dict[str, BiomePalette] = {
         "moss":           "minecraft:moss_carpet",
         "ceiling_slab":   "minecraft:sandstone_slab",
         "interior_light": "minecraft:pearlescent_froglight",
+        "banner":         "minecraft:orange_banner",
+        "roof_block":     "minecraft:smooth_sandstone",
     },
     "taiga": {
         "wall":           "minecraft:spruce_planks",
@@ -98,6 +104,8 @@ BIOME_PALETTES: dict[str, BiomePalette] = {
         "moss":           "minecraft:moss_carpet",
         "ceiling_slab":   "minecraft:spruce_slab",
         "interior_light": "minecraft:pearlescent_froglight",
+        "banner":         "minecraft:blue_banner",
+        "roof_block":     "minecraft:spruce_planks",
     },
     "mountain": {
         "wall":           "minecraft:stone_bricks",
@@ -117,6 +125,8 @@ BIOME_PALETTES: dict[str, BiomePalette] = {
         "moss":           "minecraft:moss_carpet",
         "ceiling_slab":   "minecraft:stone_brick_slab",
         "interior_light": "minecraft:pearlescent_froglight",
+        "banner":         "minecraft:gray_banner",
+        "roof_block":     "minecraft:stone_bricks",
     },
     "medieval": {
         "wall":           "minecraft:stone_bricks",
@@ -136,6 +146,8 @@ BIOME_PALETTES: dict[str, BiomePalette] = {
         "moss":           "minecraft:moss_carpet",
         "ceiling_slab":   "minecraft:oak_slab",
         "interior_light": "minecraft:pearlescent_froglight",
+        "banner":         "minecraft:red_banner",
+        "roof_block":     "minecraft:spruce_planks",
     },
 }
 

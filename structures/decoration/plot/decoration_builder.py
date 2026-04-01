@@ -9,7 +9,7 @@ import gdpc.geometry as geo
 
 from data.biome_palettes import BiomePalette, palette_get
 from data.settlement_entities import Plot
-from structures.base.components import place_light
+from structures.base.build_context import place_light
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +30,6 @@ class DecorationBuilder:
             self._build_well(plot)
         else:
             self._build_fountain(plot)
-
-    # ------------------------------------------------------------------
-    # Well
-    # ------------------------------------------------------------------
 
     def _build_well(self, plot: Plot) -> None:
         """A 3×3 stone-brick well with a roof and hanging lantern."""
@@ -66,10 +62,6 @@ class DecorationBuilder:
 
         place_light(self.editor, (x + 1, y + 3, z + 1), light, hanging=True)
         logger.debug("Well built at (%d, %d, %d).", x, y, z)
-
-    # ------------------------------------------------------------------
-    # Fountain
-    # ------------------------------------------------------------------
 
     def _build_fountain(self, plot: Plot) -> None:
         """Delegate to build_fountain_at using the plot centre."""

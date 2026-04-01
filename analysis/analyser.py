@@ -12,29 +12,7 @@ from data.configurations import TerrainConfig
 
 
 class TerrainAnalyser:
-    """
-    Computes terrain metrics for settlement suitability scoring.
-
-    Usage
-    -----
-    Call `compute_scores()` as the single public entry point — it runs all
-    metrics in the correct order and populates every output attribute.
-    Individual `_compute_*` methods are private implementation details.
-
-    All output arrays share the shape of the input heightmaps.
-
-    Output attributes (populated after compute_scores())
-    -----------------------------------------------------
-    slope_map       : float32 — local slope magnitude (np.gradient output)
-    flatness        : float32 — inverse local variance, in (0, 1]
-    accessibility   : float32 — fraction of 4-neighbours reachable, in [0, 1]
-    expansion       : float32 — fraction of neighbourhood that is flat, in [0, 1]
-    biome_score     : float32 — per-cell biome suitability weight, in [0, 1]
-    water_mask      : bool    — True where the cell is water
-    water_distances : float32 — distance to nearest water cell (cells)
-    roughness_map   : float32 — local height range
-    scores          : float32 — normalised composite suitability score, in [0, 1]
-    """
+    """Computes terrain metrics and a composite suitability score map."""
 
     def __init__(
         self,
@@ -60,10 +38,6 @@ class TerrainAnalyser:
         self.water_distances: np.ndarray | None = None
         self.roughness_map:   np.ndarray | None = None
         self.scores:          np.ndarray | None = None
-
-    # ------------------------------------------------------------------
-    # Private metric computations
-    # ------------------------------------------------------------------
 
     def _compute_slope(self) -> None:
         gx, gz = np.gradient(self.heightmap_ground)
@@ -127,18 +101,8 @@ class TerrainAnalyser:
             minimum_filter(self.heightmap_ground, size=size)
         ).astype(np.float32)
 
-    # ------------------------------------------------------------------
-    # Public entry point
-    # ------------------------------------------------------------------
-
     def compute_scores(self) -> None:
-        """
-        Compute all terrain metrics and a combined suitability score map.
-
-        This is the only method that should be called externally.
-        After this call, all output attributes are populated and `scores`
-        is normalised to [0, 1].
-        """
+        """Run all metric computations and populate scores, normalised to [0, 1]."""
         self._compute_slope()
         self._compute_flatness()
         self._compute_accessibility()
@@ -158,18 +122,11 @@ class TerrainAnalyser:
         slope_penalty = np.clip(self.slope_map  / self.config.slope_scale, 0, 1)
         water_penalty = self.water_mask.astype(np.float32)
 
-        max_h = float(np.max(self.heightmap_ground))
-        elevation = (
-            self.heightmap_ground / max_h if max_h > 0
-            else np.zeros_like(self.heightmap_ground)
-        )
-
         raw = (
             1.5 * self.flatness
             + 2.0 * self.accessibility
             + 2.0 * self.expansion
             + 0.5 * self.biome_score
-            + 0.8 * elevation
             + 0.8 * water_proximity_bonus
             - 1.0 * water_penalty
             - 2.0 * forest_penalty

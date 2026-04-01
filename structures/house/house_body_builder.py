@@ -1,35 +1,48 @@
 """
+structures/house/house_body_builder.py
+----------------------------------------
 Body builder for the house shape grammar.
 
 Handles everything below the roof line:
-  build_foundation  — cobblestone perimeter + floor
-  build_body        — lower storey walls, windows, top beam
-  build_facade      — door face (door + front windows)
-  build_ceiling     — stripped_spruce_log ring + oak_slab fill + light
+
+  build_foundation  — perimeter in foundation material, interior in floor material
+  build_body        — lower storey walls with window row and top beam
+  build_facade      — door face (door + flanking windows)
+  build_ceiling     — beam ring + slab fill + central light
   build_upper       — half-timbered upper storey walls above the ceiling
+
+Design
+------
+Generic geometry (solid rects, hollow walls) is delegated to
+structures.base.primitives so there is no duplicated logic here.
+Only house-specific decisions live in this file:
+  • Window placement that differs per face (facade vs. side)
+  • Ceiling beam ring with interior froglight
+  • Half-timbered upper storey pattern (accent posts + wall infill)
 """
 from __future__ import annotations
 
 import random
 
 from gdpc import Block
-from gdpc.editor import Editor
 
-from data.biome_palettes import BiomePalette, palette_get
-from .house_context import Ctx
+from data.biome_palettes import palette_get
+from structures.base.primitives import build_ceiling as prim_ceiling
+from structures.base.primitives import build_foundation as prim_foundation
+from structures.house.house_context import Ctx
 
 
 class BodyBuilder:
-
-    def __init__(self, editor: Editor, palette: BiomePalette) -> None:
-        self.editor  = editor
-        self.palette = palette
 
     # ------------------------------------------------------------------
     # Foundation + floor
     # ------------------------------------------------------------------
 
     def build_foundation(self, ctx: Ctx) -> None:
+        """
+        Perimeter blocks use the 'foundation' material; interior uses
+        'floor' material (with 10 % chance of 'moss' for variety).
+        """
         mat_found = ctx.palette["foundation"]
         mat_floor = palette_get(ctx.palette, "floor", "minecraft:oak_planks")
         mat_moss  = palette_get(ctx.palette, "moss",  "minecraft:moss_block")
@@ -38,8 +51,8 @@ class BodyBuilder:
         floor_pos = []
         for dx in range(ctx.w):
             for dz in range(ctx.d):
-                pos    = (ctx.x + dx, ctx.base_y, ctx.z + dz)
-                on_edge = dx == 0 or dx == ctx.w-1 or dz == 0 or dz == ctx.d-1
+                pos     = (ctx.x + dx, ctx.base_y, ctx.z + dz)
+                on_edge = dx == 0 or dx == ctx.w - 1 or dz == 0 or dz == ctx.d - 1
                 (found_pos if on_edge else floor_pos).append(pos)
 
         ctx.editor.placeBlock(found_pos, Block(mat_found))
@@ -47,11 +60,20 @@ class BodyBuilder:
             mat = mat_moss if random.random() < 0.10 else mat_floor
             ctx.editor.placeBlock(pos, Block(mat))
 
+        # Embed the structure into terrain
+        prim_foundation(
+            _EditorCtxAdapter(ctx), ctx.x, ctx.base_y, ctx.z, ctx.w, ctx.d
+        )
+
     # ------------------------------------------------------------------
     # Lower storey walls
     # ------------------------------------------------------------------
 
     def build_body(self, ctx: Ctx) -> None:
+        """
+        Hollow walls with a window row at mid-height and a solid top beam row.
+        The facade face is skipped here — build_facade handles it separately.
+        """
         mat_wall   = ctx.palette["wall"]
         mat_window = palette_get(ctx.palette, "window", "minecraft:brown_stained_glass")
 
@@ -63,9 +85,9 @@ class BodyBuilder:
             is_top = (y == top_y)
             is_win = (y == win_y)
 
-            # Z faces (south + north)
+            # Z-facing walls (skip door face entirely)
             for dx in range(ctx.w):
-                for face_z in [ctx.z, ctx.z + ctx.d - 1]:
+                for face_z in (ctx.z, ctx.z + ctx.d - 1):
                     if face_z == ctx.door_z:
                         continue
                     is_corner = dx == 0 or dx == ctx.w - 1
@@ -74,9 +96,9 @@ class BodyBuilder:
                     elif is_win:
                         ctx.editor.placeBlock((ctx.x + dx, y, face_z), Block(mat_window))
 
-            # X faces (east + west), excluding corners already placed
+            # X-facing walls (skip corners already placed above)
             for dz in range(1, ctx.d - 1):
-                for face_x in [ctx.x, ctx.x + ctx.w - 1]:
+                for face_x in (ctx.x, ctx.x + ctx.w - 1):
                     is_corner_z = dz == 1 or dz == ctx.d - 2
                     if is_corner_z or is_top:
                         ctx.editor.placeBlock((face_x, y, ctx.z + dz), Block(mat_wall))
@@ -88,6 +110,10 @@ class BodyBuilder:
     # ------------------------------------------------------------------
 
     def build_facade(self, ctx: Ctx) -> None:
+        """
+        Door face: solid wall with door opening, flanking windows, top beam.
+        Reads 'door' from palette so every biome gets the right door type.
+        """
         mat_wall   = ctx.palette["wall"]
         mat_window = palette_get(ctx.palette, "window", "minecraft:brown_stained_glass")
         mat_door   = palette_get(ctx.palette, "door",   "minecraft:oak_door")
@@ -109,13 +135,12 @@ class BodyBuilder:
                 if is_corner or is_top:
                     ctx.editor.placeBlock((x, y, face_z), Block(mat_wall))
                 elif is_door_col and dy in (1, 2):
-                    pass   # door placed below
+                    pass  # door blocks placed below
                 elif is_win_col and y == win_y:
                     ctx.editor.placeBlock((x, y, face_z), Block(mat_window))
                 else:
                     ctx.editor.placeBlock((x, y, face_z), Block(mat_wall))
 
-        # Door blocks
         ctx.editor.placeBlock(
             (door_x, ctx.base_y + 1, face_z),
             Block(mat_door, {"facing": ctx.door_facing, "half": "lower", "hinge": "left"}),
@@ -130,22 +155,16 @@ class BodyBuilder:
     # ------------------------------------------------------------------
 
     def build_ceiling(self, ctx: Ctx) -> None:
-        mat_beam    = palette_get(ctx.palette, "accent_beam",     "minecraft:stripped_spruce_log")
-        mat_ceiling = palette_get(ctx.palette, "ceiling_slab",    "minecraft:oak_slab")
-        mat_light   = palette_get(ctx.palette, "interior_light",  "minecraft:pearlescent_froglight")
-
-        cy = ctx.ceiling_y
-        beam_pos = []
-        ceil_pos = []
-        for dx in range(ctx.w):
-            for dz in range(ctx.d):
-                pos     = (ctx.x + dx, cy, ctx.z + dz)
-                on_edge = dx == 0 or dx == ctx.w-1 or dz == 0 or dz == ctx.d-1
-                (beam_pos if on_edge else ceil_pos).append(pos)
-
-        ctx.editor.placeBlock(beam_pos, Block(mat_beam))
-        ctx.editor.placeBlock(ceil_pos, Block(mat_ceiling, {"type": "top"}))
-        ctx.editor.placeBlock((ctx.mid_x, cy, ctx.mid_z), Block(mat_light))
+        """
+        Delegates to the shared build_ceiling primitive so all structures use
+        the same beam-ring + slab + size-based light logic.
+        """
+        prim_ceiling(
+            ctx,
+            ctx.x, ctx.ceiling_y, ctx.z,
+            ctx.w, ctx.d,
+            floor_y=ctx.base_y,
+        )
 
     # ------------------------------------------------------------------
     # Upper storey walls
@@ -153,9 +172,12 @@ class BodyBuilder:
 
     def build_upper(self, ctx: Ctx) -> None:
         """
-        Half-timbered upper storey walls sitting on top of the ceiling ring,
-        rising ctx.upper_h layers.  Same hollow-box logic as the lower storey
-        but using accent timber for corner posts and horizontal rails.
+        Half-timbered upper storey walls sitting on top of the ceiling ring.
+
+        Pattern:
+          • Corner posts and horizontal rails use 'accent' (timber).
+          • Infill panels use 'wall'.
+          • A window row appears at mid-height of the upper storey.
         """
         mat_wall   = ctx.palette["wall"]
         mat_accent = ctx.palette["accent"]
@@ -165,22 +187,49 @@ class BodyBuilder:
             y       = ctx.ceiling_y + dy
             is_rail = (dy % 2 == 0)
 
-            # Z faces
+            # Z-facing walls
             for dx in range(ctx.w):
                 is_post = dx == 0 or dx == ctx.w - 1
-                for face_z in [ctx.z, ctx.z + ctx.d - 1]:
+                for face_z in (ctx.z, ctx.z + ctx.d - 1):
                     if is_post or is_rail:
                         ctx.editor.placeBlock((ctx.x + dx, y, face_z), Block(mat_accent))
                     elif dy == ctx.upper_h // 2 + 1:
-                        # Window row at mid-height of upper storey
                         ctx.editor.placeBlock((ctx.x + dx, y, face_z), Block(mat_window))
                     else:
                         ctx.editor.placeBlock((ctx.x + dx, y, face_z), Block(mat_wall))
 
-            # X faces
+            # X-facing walls
             for dz in range(1, ctx.d - 1):
-                for face_x in [ctx.x, ctx.x + ctx.w - 1]:
+                for face_x in (ctx.x, ctx.x + ctx.w - 1):
                     if is_rail:
                         ctx.editor.placeBlock((face_x, y, ctx.z + dz), Block(mat_accent))
                     else:
                         ctx.editor.placeBlock((face_x, y, ctx.z + dz), Block(mat_wall))
+
+
+# ---------------------------------------------------------------------------
+# Internal adapter — lets prim_foundation work with Ctx
+# ---------------------------------------------------------------------------
+
+class _EditorCtxAdapter:
+    """
+    Minimal BuildContext-compatible shim so the generic build_foundation
+    primitive can be called from BodyBuilder without importing BuildContext.
+
+    Only `place_many` is needed; everything else is unused by that primitive.
+    """
+    def __init__(self, ctx: Ctx) -> None:
+        self._ctx = ctx
+
+    @property
+    def palette(self):
+        return self._ctx.palette
+
+    @property
+    def editor(self):
+        return self._ctx.editor
+
+    def place_many(self, positions, key, states=None):
+        mat = palette_get(self._ctx.palette, key, "minecraft:stone")
+        block = Block(mat, states) if states else Block(mat)
+        self._ctx.editor.placeBlock(positions, block)

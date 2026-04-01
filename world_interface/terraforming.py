@@ -1,39 +1,4 @@
-"""
-terraforming.py
----------------
-Terrain modification operations for the settlement generation pipeline.
-
-Public API
-----------
-terraform_area(editor, analysis, ...)
-    Smooth terrain bumps downward using iterative neighbourhood averaging.
-
-terraform_perimeter(editor, analysis, config, ...)
-    Level the perimeter band so the fortification wall sits on flat ground.
-
-detect_hole_entries(analysis, hole_threshold) -> list[tuple[int, int]]
-    Find seed world (x, z) coordinates for holes using the heightmap.
-    Three strategies: sharp pits, gradual bowls, water-filled depressions.
-    Ravines excluded by ocean-floor depth check.
-
-flood_fill_hole(editor, analysis, entry_wx, entry_wz, ...) -> HoleRegion | None
-    BFS outward on the heightmap surface from a seed point to find the
-    true extent of the depression. target_y = min rim height.
-
-fill_holes(editor, analysis, regions, ..., cap_depth)
-    Place a flat cap of cap_depth layers at target_y over each region.
-    Logs Y range placed and /tp command for in-game verification.
-
-fill_all_holes(editor, analysis, ..., cap_depth)
-    Convenience wrapper — detect entries, BFS-fill each, place caps.
-
-Call order in settlement_generator.py Phase 2
-----------------------------------------------
-    remove_sparse_top(...)   # terrain_clearer
-    terraform_area(...)      # shave bumps downward
-    fill_all_holes(...)      # cap all surface holes
-    seal_cave_openings(...)  # terrain_clearer — ravines and cave mouths
-"""
+"""Terrain modification operations for settlement generation."""
 from __future__ import annotations
 
 import logging
@@ -186,7 +151,8 @@ class HoleRegion:
     cells         : (local_x, local_z) index pairs in this hole.
     hole_radius   : max distance from centroid to any hole cell.
     sample_radius : hole_radius + 3 (informational).
-    target_y      : Y level where the flat cap is placed (min rim height).
+    target_y      : Y level where the flat cap is placed (calculated from geometry).
+    min_hole_y    : deepest Y in the hole (for cap depth calculation).
     size          : number of cells in the hole.
     strategy      : always "flat cap at rim" for this implementation.
     wx_centre     : world X of the hole centroid (for /tp logging).
@@ -196,6 +162,7 @@ class HoleRegion:
     hole_radius:   float
     sample_radius: float
     target_y:      int
+    min_hole_y:    int
     size:          int
     strategy:      str
     wx_centre:     int = 0
@@ -352,6 +319,7 @@ def flood_fill_hole(
     visited:  set[tuple[int, int]] = {(ix0, iz0)}
     hole_xz:  list[tuple[int, int]] = [(ix0, iz0)]
     rim_y:    list[int] = []
+    hole_y:   list[int] = [entry_y]  # Track all Y values in the hole
     queue:    deque[tuple[int, int]] = deque([(ix0, iz0)])
     cx_sum    = ix0
     cz_sum    = iz0
@@ -376,6 +344,7 @@ def flood_fill_hole(
             if ny <= entry_y:
                 # Still inside the depression — expand
                 hole_xz.append((nix, niz))
+                hole_y.append(ny)  # Track this hole cell's height
                 cx_sum += nix
                 cz_sum += niz
                 queue.append((nix, niz))
@@ -394,18 +363,27 @@ def flood_fill_hole(
         for ix, iz in hole_xz
     )) if hole_size > 1 else 1.0
 
-    # Cap Y = minimum rim height = where the hole starts dropping
+    # Calculate cap position based on hole geometry
     rim_arr  = np.array(rim_y, dtype=np.float32)
-    target_y = int(np.min(rim_arr))
+    min_rim_y = int(np.min(rim_arr))
+    hole_arr = np.array(hole_y, dtype=np.float32)
+    min_hole_y = int(np.min(hole_arr))
+    hole_depth = min_rim_y - min_hole_y
+    
+    # Place cap 40% down into the hole (from rim toward floor)
+    # This provides a natural-looking intermediate level
+    cap_offset = int(hole_depth * 0.4)
+    target_y = min_rim_y - cap_offset
 
     cx_local   = max(0, min(int(round(cx_mean)), w - 1))
     cz_local   = max(0, min(int(round(cz_mean)), d - 1))
     wx_c, wz_c = area.index_to_world(cx_local, cz_local)
 
     logger.info(
-        "  Hole: size=%d  radius=%.1f  rim_n=%d  target_y=%d  "
-        "centre=(%d,%d,%d)  /tp %d %d %d",
-        hole_size, hole_radius, len(rim_y), target_y,
+        "  Hole: size=%d  radius=%.1f  rim_n=%d  depth=%d  "
+        "target_y=%d (%.0f%% down)  centre=(%d,%d,%d)  /tp %d %d %d",
+        hole_size, hole_radius, len(rim_y), hole_depth,
+        target_y, (cap_offset / hole_depth * 100) if hole_depth > 0 else 0,
         wx_c, target_y, wz_c,
         wx_c, target_y + 5, wz_c,
     )
@@ -415,6 +393,7 @@ def flood_fill_hole(
         hole_radius   = hole_radius,
         sample_radius = hole_radius + 3,
         target_y      = target_y,
+        min_hole_y    = min_hole_y,
         size          = hole_size,
         strategy      = "flat cap at rim",
         wx_centre     = wx_c,

@@ -36,11 +36,15 @@ class DistrictPlanner:
         config: SettlementConfig,
         num_districts: int | None = None,
         seed: int | None = None,
+        exclusion_center: tuple[int, int] | None = None,
+        exclusion_radius: int = 0,
     ) -> None:
-        self.analysis      = analysis
-        self.config        = config
-        self.num_districts = num_districts  # None → auto-fit from area
-        self.seed          = seed
+        self.analysis          = analysis
+        self.config            = config
+        self.num_districts     = num_districts  # None → auto-fit from area
+        self.seed              = seed
+        self.exclusion_center  = exclusion_center   # local-index (i, j)
+        self.exclusion_radius  = exclusion_radius
 
         if seed is not None:
             random.seed(seed)
@@ -51,8 +55,6 @@ class DistrictPlanner:
         self._thresholds: dict = {}
 
         logger.info("District MDP solved.\n%s", self._mdp.policy_table())
-
-    # ------------------------------------------------------------------
 
     def generate(self) -> Districts:
         area             = self.analysis.best_area
@@ -97,6 +99,18 @@ class DistrictPlanner:
 
         score = self._get_score_map(local_slope, local_roughness)
 
+        # Shared index grid — used for both the exclusion mask and Voronoi assignment.
+        xi, zi = np.indices((w, d))
+
+        # Zero the score inside the plaza exclusion zone so Poisson disk
+        # won't place any district seeds there.
+        excl_mask: np.ndarray | None = None
+        if self.exclusion_center is not None and self.exclusion_radius > 0:
+            ec_i, ec_j = self.exclusion_center
+            excl_mask  = (xi - ec_i) ** 2 + (zi - ec_j) ** 2 <= self.exclusion_radius ** 2
+            score      = score.copy()
+            score[excl_mask] = 0.0
+
         seeds = poisson_disk(
             width=w,
             depth=d,
@@ -104,6 +118,15 @@ class DistrictPlanner:
             score_map=score,
             seed=self.seed,
         )
+
+        # Remove any seeds that still landed inside the exclusion zone
+        if excl_mask is not None and len(seeds) > 0:
+            seeds = np.array([
+                s for s in seeds
+                if not excl_mask[int(s[0]), int(s[1])]
+            ], dtype=float)
+            if len(seeds) == 0:
+                seeds = np.empty((0, 2), dtype=float)
 
         if len(seeds) < 2:
             logger.warning(
@@ -124,14 +147,22 @@ class DistrictPlanner:
         vor  = Voronoi(seeds)
         tree = cKDTree(seeds)
 
-        xi, zi  = np.indices((w, d))
-        coords  = np.stack([xi.ravel(), zi.ravel()], axis=-1)
+        coords = np.stack([xi.ravel(), zi.ravel()], axis=-1)
         _, district_map_flat = tree.query(coords)
         district_map = district_map_flat.reshape(w, d)
 
+        # Erase plaza exclusion zone from the district map so those cells
+        # are never assigned to any district.
+        if excl_mask is not None:
+            district_map[excl_mask] = -1
+
         n_seeds = len(seeds)
 
-        counts        = np.bincount(district_map_flat, minlength=n_seeds)
+        # Count only non-excluded cells per district
+        valid_flat = district_map.ravel()
+        counts = np.bincount(
+            valid_flat[valid_flat >= 0], minlength=n_seeds
+        ).astype(int)
         avg_slope     = np.zeros(n_seeds)
         avg_roughness = np.zeros(n_seeds)
         avg_water     = np.zeros(n_seeds)
@@ -221,8 +252,6 @@ class DistrictPlanner:
             voronoi      = vor,
             district_list= final_district_list,
         )
-
-    # ------------------------------------------------------------------
 
     def _assign_type(self, slope: float, roughness: float, water_dist: float) -> str:
         return self._mdp.act(slope, roughness, water_dist, **self._thresholds)

@@ -7,7 +7,7 @@ from gdpc.editor import Editor
 from data.analysis_results import WorldAnalysisResult
 from data.biome_palettes import BiomePalette
 from data.settlement_entities import Districts
-from structures.decoration.decoration_builder import DecorationBuilder
+from structures.decoration.plot.decoration_builder import DecorationBuilder
 
 logger = logging.getLogger(__name__)
 

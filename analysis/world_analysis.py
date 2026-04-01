@@ -27,6 +27,22 @@ class WorldAnalyser:
         self.fetcher = WorldFetcher(terrain_loader)
         self.config  = configuration
 
+    @staticmethod
+    def _cap_area(area, max_size: int):
+        """Return `area` shrunk to max_size × max_size centred on itself."""
+        from data.build_area import BuildArea
+        w, d = area.width, area.depth
+        if w <= max_size and d <= max_size:
+            return area
+        cx = area.x_from + w // 2
+        cz = area.z_from + d // 2
+        half = max_size // 2
+        return BuildArea(
+            x_from=cx - half,  y_from=area.y_from,
+            z_from=cz - half,  y_to=area.y_to,
+            x_to=cx + half - 1, z_to=cz + half - 1,
+        )
+
     def prepare(self) -> WorldAnalysisResult:
         """
         Fetch world data, analyse terrain metrics, and select the best patch.
@@ -37,8 +53,10 @@ class WorldAnalyser:
             Contains the selected build area and all terrain maps, each sliced
             to the best-patch extent.
         """
-        # Fetch raw world data over the full build area
+        # Fetch raw world data — cap to max_analysis_size to avoid timeouts
+        # on very large build areas (e.g. competition-standard 1001×1001).
         build_area = self.fetcher.fetch_build_area()
+        build_area = self._cap_area(build_area, self.config.max_analysis_size)
         surface, ground, ocean_floor, plant_thickness = (
             self.fetcher.fetch_heightmaps(build_area)
         )
