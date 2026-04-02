@@ -9,9 +9,7 @@ the selected operation on the terrain around you.
 Usage
 -----
     python3 debug/test_terraform.py                        # terraform_area
-    python3 debug/test_terraform.py --op fill_holes
-    python3 debug/test_terraform.py --op fill_holes --cap-depth 5
-    python3 debug/test_terraform.py --op seal
+    python3 debug/test_terraform.py --op lava
     python3 debug/test_terraform.py --op sparse
     python3 debug/test_terraform.py --op perimeter
     python3 debug/test_terraform.py --op all
@@ -54,12 +52,11 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--op",
-        choices=["terraform", "fill_holes", "seal", "sparse", "perimeter", "all"],
+        choices=["terraform", "lava", "sparse", "perimeter", "all"],
         default="terraform",
         help=(
             "  terraform  — smooth bumps downward\n"
-            "  fill_holes — cap holes at rim level\n"
-            "  seal       — seal cave openings\n"
+            "  lava       — clear surface lava pools\n"
             "  sparse     — remove isolated terrain clusters\n"
             "  perimeter  — level the build-area perimeter\n"
             "  all        — run all in pipeline order\n"
@@ -77,14 +74,6 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--smooth-radius", type=int, default=3,
         help="Neighbourhood radius for terraform_area (default: 3).",
-    )
-    p.add_argument(
-        "--hole-threshold", type=int, default=2,
-        help="Minimum deficit below neighbours to flag as hole (default: 2).",
-    )
-    p.add_argument(
-        "--cap-depth", type=int, default=3,
-        help="Layers to fill downward from the hole cap (default: 3).",
     )
     p.add_argument(
         "--dry-run", action="store_true",
@@ -267,10 +256,8 @@ def main() -> None:
 
     from gdpc.editor import Editor
     from data.configurations import SettlementConfig
-    from world_interface.terraforming import (
-        terraform_area, fill_all_holes, terraform_perimeter,
-    )
-    from world_interface.terrain_clearer import seal_cave_openings, remove_sparse_top
+    from world_interface.terraforming import terraform_area, terraform_perimeter
+    from world_interface.terrain_clearer import clear_lava_pools, remove_sparse_top
 
     logger.info("Connecting to Minecraft server...")
     editor = Editor(buffering=True)
@@ -308,22 +295,10 @@ def main() -> None:
                        passes=args.passes, smooth_radius=args.smooth_radius)
         _log_heightmap("after terraform_area", analysis)
 
-    def _run_fill_holes():
-        logger.info(
-            "--- fill_all_holes (threshold=%d, cap_depth=%d) ---",
-            args.hole_threshold, args.cap_depth,
-        )
-        fill_all_holes(
-            active_editor, analysis,
-            hole_threshold=args.hole_threshold,
-            cap_depth=args.cap_depth,
-        )
-        _log_heightmap("after fill_all_holes", analysis)
-
-    def _run_seal():
-        logger.info("--- seal_cave_openings ---")
-        seal_cave_openings(active_editor, analysis)
-        _log_heightmap("after seal_cave_openings", analysis)
+    def _run_lava():
+        logger.info("--- clear_lava_pools ---")
+        clear_lava_pools(active_editor, analysis)
+        _log_heightmap("after clear_lava_pools", analysis)
 
     def _run_sparse():
         logger.info("--- remove_sparse_top ---")
@@ -337,15 +312,13 @@ def main() -> None:
 
     op = args.op
     if   op == "terraform":  _run_terraform()
-    elif op == "fill_holes": _run_fill_holes()
-    elif op == "seal":       _run_seal()
+    elif op == "lava":       _run_lava()
     elif op == "sparse":     _run_sparse()
     elif op == "perimeter":  _run_perimeter()
     elif op == "all":
         _run_sparse()
         _run_terraform()
-        _run_fill_holes()
-        _run_seal()
+        _run_lava()
 
     if args.dry_run:
         active_editor.report()

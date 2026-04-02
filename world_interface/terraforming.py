@@ -3,50 +3,44 @@ terraforming.py
 ---------------
 Terrain modification operations for the settlement generation pipeline.
 
+terraform_area operates in two modes depending on whether plots are supplied:
+
+  **Smooth mode** (no plots):
+      Iterative neighbourhood averaging that shaves bumps downward.
+      Used by settlement_generator in Phase 2 before plot planning.
+
+  **Platform mode** (plots provided):
+      Additive-only fill — raises terrain to min(plot.y) so structures
+      have a solid base. Optionally blends outward beyond best_area.
+
 Public API
 ----------
-terraform_area(editor, analysis, ...)
-    Smooth terrain bumps downward using iterative neighbourhood averaging.
+terraform_area(editor, analysis, plots=None, ...)
+    Dual-mode: smooth downward when plots=None, platform fill otherwise.
 
 terraform_perimeter(editor, analysis, config, ...)
     Level the perimeter band so the fortification wall sits on flat ground.
 
-detect_hole_entries(analysis, hole_threshold) -> list[tuple[int, int]]
-    Find seed world (x, z) coordinates for holes using the heightmap.
-    Three strategies: sharp pits, gradual bowls, water-filled depressions.
-    Ravines excluded by ocean-floor depth check.
-
-flood_fill_hole(editor, analysis, entry_wx, entry_wz, ...) -> HoleRegion | None
-    BFS outward on the heightmap surface from a seed point to find the
-    true extent of the depression. target_y = min rim height.
-
-fill_holes(editor, analysis, regions, ..., cap_depth)
-    Place a flat cap of cap_depth layers at target_y over each region.
-    Logs Y range placed and /tp command for in-game verification.
-
-fill_all_holes(editor, analysis, ..., cap_depth)
-    Convenience wrapper — detect entries, BFS-fill each, place caps.
-
 Call order in settlement_generator.py Phase 2
 ----------------------------------------------
-    remove_sparse_top(...)   # terrain_clearer
-    terraform_area(...)      # shave bumps downward
-    fill_all_holes(...)      # cap all surface holes
-    seal_cave_openings(...)  # terrain_clearer — ravines and cave mouths
+    remove_sparse_top(...)    # terrain_clearer
+    terraform_area(...)       # smooth bumps downward (no plots)
+    clear_lava_pools(...)     # terrain_clearer — clear surface lava
 """
 from __future__ import annotations
 
 import logging
-from collections import deque
-from dataclasses import dataclass
+from typing import Any, Iterator
 
 import numpy as np
 from gdpc import Block
 from gdpc.editor import Editor
-from scipy.ndimage import uniform_filter
+from scipy.ndimage import binary_closing, uniform_filter
 
 from data.analysis_results import WorldAnalysisResult
+from data.build_area import BuildArea
 from data.configurations import SettlementConfig
+from data.settlement_entities import Plot
 
 logger = logging.getLogger(__name__)
 
@@ -56,44 +50,248 @@ _AIR_IDS: frozenset[str] = frozenset({
     "minecraft:void_air",
 })
 
+_EMPTY_LIKE_IDS: frozenset[str] = frozenset({
+    "minecraft:water",
+    "minecraft:lava",
+    "minecraft:tall_grass",
+    "minecraft:grass",
+    "minecraft:fern",
+    "minecraft:large_fern",
+    "minecraft:vine",
+    "minecraft:seagrass",
+    "minecraft:tall_seagrass",
+    "minecraft:kelp",
+    "minecraft:snow",
+})
+
 
 # ---------------------------------------------------------------------------
-# terraform_area
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _is_empty_like(block_id: str) -> bool:
+    """Return True for air, fluid, and plant-type blocks (safe to overwrite)."""
+    bid = block_id.lower()
+    if "air" in bid:
+        return True
+    if bid in _EMPTY_LIKE_IDS:
+        return True
+    return ("flower" in bid) or ("leaves" in bid)
+
+
+def _fill_vertical_column(
+    editor: Editor,
+    x: int,
+    z: int,
+    y_lo: int,
+    y_hi: int,
+    block_type: str,
+    *,
+    use_fill_command: bool,
+) -> None:
+    """Place blocks from y_lo to y_hi inclusive."""
+    if y_lo > y_hi:
+        return
+    if use_fill_command and hasattr(editor, "runCommandGlobal"):
+        editor.runCommandGlobal(f"fill {x} {y_lo} {z} {x} {y_hi} {z} {block_type}")
+        return
+    positions = [(x, y, z) for y in range(y_lo, y_hi + 1)]
+    editor.placeBlock(positions, Block(block_type))
+
+
+def iter_moat_perimeter_cells(
+    area: BuildArea,
+    tower_width: int,
+    wall_thickness: int,
+    extra: int = 2,
+) -> Iterator[tuple[int, int]]:
+    """
+    Yield world XZ cells outside best_area that lie in the fortification
+    "moat" band (settlement edge to wall midline + thickness).
+    """
+    mid = tower_width // 2
+    reach = mid + wall_thickness + max(1, extra)
+    bands = (
+        (area.x_from - reach, area.x_to + reach, area.z_from - reach, area.z_from - 1),
+        (area.x_from - reach, area.x_to + reach, area.z_to + 1, area.z_to + reach),
+        (area.x_from - reach, area.x_from - 1, area.z_from - reach, area.z_to + reach),
+        (area.x_to + 1, area.x_to + reach, area.z_from - reach, area.z_to + reach),
+    )
+    seen: set[tuple[int, int]] = set()
+    for x0, x1, z0, z1 in bands:
+        for x in range(int(x0), int(x1) + 1):
+            for z in range(int(z0), int(z1) + 1):
+                if area.x_from <= x <= area.x_to and area.z_from <= z <= area.z_to:
+                    continue
+                key = (x, z)
+                if key in seen:
+                    continue
+                seen.add(key)
+                yield x, z
+
+
+def bridge_void_under_floor(
+    editor: Editor,
+    x: int,
+    z: int,
+    floor_y: int,
+    min_y: int,
+    block_type: str,
+    *,
+    use_fill_command: bool,
+) -> bool:
+    """
+    Fill any vertical run of empty/fluid blocks directly under a floor.
+    Returns True if any fill was applied.
+    """
+    if not hasattr(editor, "getBlock"):
+        return False
+    top = floor_y - 1
+    y = top
+    while y >= min_y:
+        bid = getattr(editor.getBlock((x, y, z)), "id", "minecraft:air")
+        if not _is_empty_like(bid):
+            break
+        y -= 1
+    fill_bottom = y + 1
+    if fill_bottom > top:
+        return False
+    _fill_vertical_column(
+        editor, x, z, fill_bottom, top, block_type,
+        use_fill_command=use_fill_command,
+    )
+    return True
+
+
+# ---------------------------------------------------------------------------
+# terraform_area  (dual mode)
 # ---------------------------------------------------------------------------
 
 def terraform_area(
     editor:              Editor,
     analysis:            WorldAnalysisResult,
+    # ---- platform mode (additive) ----
+    plots:               list[Plot] | None = None,
+    exclude_plots:       list[Plot] | None = None,
+    allowed_mask:        np.ndarray | None = None,
+    fill_width:          int | None = None,
+    fill_depth:          int | None = None,
+    fill_moat_perimeter: bool = False,
+    moat_extra:          int = 2,
+    fill_plot_support:   bool = False,
+    fill_area:           bool = True,
+    use_world_scan:      bool = False,
+    max_scan_depth:      int | None = 24,
+    connect_fill_gaps:   bool = True,
+    outer_blend_width:   int = 0,
+    use_fill_command:    bool = True,
+    block_type:          str = "minecraft:grass_block",
+    # ---- smooth mode (downward) ----
     passes:              int   = 3,
     smooth_radius:       int   = 3,
     max_change_per_pass: float = 1.0,
+    **kwargs: Any,
 ) -> None:
     """
-    Smooth terrain bumps within best_area using iterative neighbourhood
-    averaging, producing natural slopes rather than hard flat cuts.
+    Dual-mode terrain modification.
 
-    Only downward smoothing is applied — cells below the local mean are
-    never raised here. Hole-filling is handled by fill_all_holes().
+    **Smooth mode** (``plots`` is None or empty):
+        Iterative downward neighbourhood averaging — shaves bumps without
+        raising anything.  Each pass moves cells above the local mean down
+        by up to ``max_change_per_pass`` blocks.
 
-    Algorithm
-    ---------
-    Each pass:
-      1. Compute the neighbourhood mean via uniform filter.
-      2. For cells ABOVE the mean: move down by up to max_change_per_pass.
-      3. For cells BELOW the mean: leave untouched.
+    **Platform mode** (``plots`` provided):
+        Additive-only fill.  Raises every allowed column inside best_area
+        to ``target_y = min(plot.y)`` so structures have a solid base.
+        When ``outer_blend_width > 0`` the fill extends outside best_area
+        in a band that steps down 1 block per cell, creating a natural slope.
+        Optionally fills voids directly under plot floors (``fill_plot_support``).
+
+    Legacy kwargs (``wall_padding``, ``edge_blend_width``, …) are silently
+    discarded via ``**kwargs``.
     """
-    area      = analysis.best_area
-    heightmap = analysis.heightmap_ground.astype(np.float32)
-    w, d      = heightmap.shape
-    size      = 2 * smooth_radius + 1
+    del kwargs
+
+    if plots:
+        _terraform_platform(
+            editor=editor,
+            analysis=analysis,
+            plots=plots,
+            exclude_plots=exclude_plots,
+            allowed_mask=allowed_mask,
+            fill_width=fill_width,
+            fill_depth=fill_depth,
+            fill_moat_perimeter=fill_moat_perimeter,
+            moat_extra=moat_extra,
+            fill_plot_support=fill_plot_support,
+            fill_area=fill_area,
+            use_world_scan=use_world_scan,
+            max_scan_depth=max_scan_depth,
+            connect_fill_gaps=connect_fill_gaps,
+            outer_blend_width=outer_blend_width,
+            use_fill_command=use_fill_command,
+            block_type=block_type,
+        )
+    else:
+        _terraform_smooth(
+            editor=editor,
+            analysis=analysis,
+            passes=passes,
+            smooth_radius=smooth_radius,
+            max_change_per_pass=max_change_per_pass,
+        )
+
+
+def _terraform_smooth(
+    editor:              Editor,
+    analysis:            WorldAnalysisResult,
+    passes:              int   = 3,
+    smooth_radius:       int   = 3,
+    max_change_per_pass: float = 1.0,
+    min_shave_blocks:    float = 1.5,
+) -> None:
+    """
+    Smooth terrain bumps using iterative neighbourhood averaging (downward only).
+
+    Each pass:
+      1. Compute the neighbourhood mean via uniform_filter.
+      2. For cells ABOVE the mean by at least min_shave_blocks: move down by up
+         to max_change_per_pass.  Gentle variations (< min_shave_blocks) are
+         left untouched so nearly-flat terrain is never needlessly disturbed.
+      3. For cells BELOW the mean: leave untouched.
+
+    Snow-covered cells are skipped entirely — shaving a snow layer off exposes
+    the grass or stone underneath and looks wrong.
+    """
+    area           = analysis.best_area
+    heightmap      = analysis.heightmap_ground.astype(np.float32)
+    w, d           = heightmap.shape
+    size           = 2 * smooth_radius + 1
+    surface_blocks = analysis.surface_blocks
+
+    # Build a per-cell "safe to shave" mask: skip water and snow-covered cells.
+    snow_mask = np.vectorize(
+        lambda b: "snow" in str(b).lower()
+    )(surface_blocks).astype(bool)
+    skip_mask = analysis.water_mask.astype(bool) | snow_mask
 
     for _ in range(passes):
-        local_mean = uniform_filter(heightmap, size=size, mode="nearest")
-        delta      = np.clip(local_mean - heightmap, -max_change_per_pass, 0.0)
-        heightmap  = heightmap + delta
+        local_mean  = uniform_filter(heightmap, size=size, mode="nearest")
+        excess      = heightmap - local_mean          # positive = above mean
+        # Only shave where the cell is meaningfully above the local average.
+        apply_mask  = (excess >= min_shave_blocks) & ~skip_mask
+        delta       = np.where(apply_mask, np.clip(-excess, -max_change_per_pass, 0.0), 0.0)
+        heightmap   = heightmap + delta
 
     new_heights = np.round(heightmap).astype(np.int32)
     old_heights = analysis.heightmap_ground.astype(np.int32)
+
+    # Block IDs whose newly-exposed top should be re-skinned as grass_block.
+    _GRASS_RESKIN: frozenset[str] = frozenset({
+        "minecraft:dirt", "minecraft:coarse_dirt",
+        "minecraft:rooted_dirt", "minecraft:podzol",
+        "minecraft:grass_block",
+    })
 
     for i in range(w):
         for j in range(d):
@@ -102,11 +300,167 @@ def terraform_area(
             if new_y >= original_y:
                 continue
             x, z = area.index_to_world(i, j)
-            for y in range(new_y + 1, original_y + 1):
-                editor.placeBlock((x, y, z), Block("minecraft:air"))
+
+            air_positions = [(x, y, z) for y in range(new_y + 1, original_y + 1)]
+            editor.placeBlock(air_positions, Block("minecraft:air"))
+
+            # Re-skin only for grass/dirt surfaces (not snow, stone, sand, …).
+            surface_bid = str(surface_blocks[i, j]).lower()
+            if any(sid in surface_bid for sid in _GRASS_RESKIN):
+                editor.placeBlock((x, new_y, z), Block("minecraft:grass_block"))
 
     analysis.heightmap_ground[:, :] = new_heights
-    logger.info("terraform_area: done (%d passes, radius=%d).", passes, smooth_radius)
+    logger.info("terraform_area (smooth): done (%d passes, radius=%d).", passes, smooth_radius)
+
+
+def _terraform_platform(
+    editor:              Editor,
+    analysis:            WorldAnalysisResult,
+    plots:               list[Plot],
+    exclude_plots:       list[Plot] | None,
+    allowed_mask:        np.ndarray | None,
+    fill_width:          int | None,
+    fill_depth:          int | None,
+    fill_moat_perimeter: bool,
+    moat_extra:          int,
+    fill_plot_support:   bool,
+    fill_area:           bool,
+    use_world_scan:      bool,
+    max_scan_depth:      int | None,
+    connect_fill_gaps:   bool,
+    outer_blend_width:   int,
+    use_fill_command:    bool,
+    block_type:          str,
+) -> None:
+    """
+    Additive platform fill — raises terrain to min(plot.y), no shaving.
+    """
+    area = analysis.best_area
+    old_heights = analysis.heightmap_ground.astype(np.int32)
+    hm_rows, hm_cols = old_heights.shape
+
+    if allowed_mask is not None and allowed_mask.shape != (hm_rows, hm_cols):
+        raise ValueError(
+            f"allowed_mask shape {allowed_mask.shape} != {(hm_rows, hm_cols)}"
+        )
+
+    fill_w = hm_rows if fill_width is None else max(1, min(int(fill_width), hm_rows))
+    fill_d = hm_cols if fill_depth is None else max(1, min(int(fill_depth), hm_cols))
+
+    target_y   = int(min(int(p.y) for p in plots))
+    min_scan_y = int(getattr(area, "y_from", -64))
+    new_heights = old_heights.copy()
+
+    # ---- footings: fill voids directly under each plot floor ----
+    if fill_plot_support:
+        can_scan = bool(use_world_scan) and hasattr(editor, "getBlock")
+        for plot in plots:
+            x0 = max(plot.x_from, area.x_from)
+            z0 = max(plot.z_from, area.z_from)
+            x1 = min(plot.x_to,   area.x_to)
+            z1 = min(plot.z_to,   area.z_to)
+            if x0 > x1 or z0 > z1:
+                continue
+            i0, j0 = area.world_to_index(x0, z0)
+            i1, j1 = area.world_to_index(x1, z1)
+            floor_y = int(plot.y)
+            for i in range(i0, i1 + 1):
+                for j in range(j0, j1 + 1):
+                    if allowed_mask is not None and not bool(allowed_mask[i, j]):
+                        continue
+                    x, z = area.index_to_world(i, j)
+                    if can_scan:
+                        bridged = bridge_void_under_floor(
+                            editor, x, z, floor_y, min_scan_y, block_type,
+                            use_fill_command=use_fill_command,
+                        )
+                        if bridged:
+                            new_heights[i, j] = max(int(new_heights[i, j]), floor_y - 1)
+                    else:
+                        cur = int(new_heights[i, j])
+                        if cur < floor_y - 1:
+                            _fill_vertical_column(
+                                editor, x, z, cur + 1, floor_y - 1, block_type,
+                                use_fill_command=use_fill_command,
+                            )
+                            new_heights[i, j] = max(cur, floor_y - 1)
+
+    if not fill_area:
+        analysis.heightmap_ground[:, :] = new_heights
+        return
+
+    # ---- build the fill mask ----
+    exclude_mask = np.zeros((hm_rows, hm_cols), dtype=bool)
+    if exclude_plots:
+        for plot in exclude_plots:
+            x0 = max(plot.x_from, area.x_from)
+            z0 = max(plot.z_from, area.z_from)
+            x1 = min(plot.x_to,   area.x_to)
+            z1 = min(plot.z_to,   area.z_to)
+            if x0 > x1 or z0 > z1:
+                continue
+            i0, j0 = area.world_to_index(x0, z0)
+            i1, j1 = area.world_to_index(x1, z1)
+            exclude_mask[i0:i1 + 1, j0:j1 + 1] = True
+
+    fill_mask = np.zeros((hm_rows, hm_cols), dtype=bool)
+    fill_mask[:fill_w, :fill_d] = True
+    if allowed_mask is not None:
+        fill_mask &= allowed_mask.astype(bool)
+    fill_mask &= ~exclude_mask
+
+    if connect_fill_gaps:
+        fill_mask = binary_closing(fill_mask, structure=np.ones((3, 3), dtype=bool))
+
+    # ---- interior fill: every allowed cell raised to target_y ----
+    raised = 0
+    for i in range(fill_w):
+        for j in range(fill_d):
+            if not bool(fill_mask[i, j]):
+                continue
+            x, z = area.index_to_world(i, j)
+            current_y = int(new_heights[i, j])
+            if current_y >= target_y:
+                continue
+            _fill_vertical_column(
+                editor, x, z, current_y + 1, target_y, block_type,
+                use_fill_command=use_fill_command,
+            )
+            new_heights[i, j] = target_y
+            raised += 1
+
+    # ---- outer blend: step down 1 block per cell beyond best_area ----
+    if outer_blend_width > 0:
+        max_fill_gap = outer_blend_width + 2
+        for ox in range(area.x_from - outer_blend_width, area.x_to + outer_blend_width + 1):
+            for oz in range(area.z_from - outer_blend_width, area.z_to + outer_blend_width + 1):
+                if area.x_from <= ox <= area.x_to and area.z_from <= oz <= area.z_to:
+                    continue
+                cheb = max(
+                    max(0, area.x_from - ox, ox - area.x_to),
+                    max(0, area.z_from - oz, oz - area.z_to),
+                )
+                if cheb > outer_blend_width:
+                    continue
+                cap_y = target_y - cheb
+                if cap_y <= 0:
+                    continue
+                li = max(0, min(hm_rows - 1, ox - area.x_from))
+                lj = max(0, min(hm_cols - 1, oz - area.z_from))
+                current_y = int(new_heights[li, lj])
+                if current_y >= cap_y:
+                    continue
+                if cap_y - current_y > max_fill_gap:
+                    continue
+                _fill_vertical_column(
+                    editor, ox, oz, current_y + 1, cap_y, block_type,
+                    use_fill_command=use_fill_command,
+                )
+
+    analysis.heightmap_ground[:, :] = new_heights
+    logger.info(
+        "terraform_area (platform): target_y=%d, %d cells raised.", target_y, raised,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -122,15 +476,14 @@ def terraform_perimeter(
 ) -> None:
     """
     Level the perimeter band around best_area so the fortification wall
-    sits on flat ground rather than following terrain drops.
+    sits on flat ground.
 
     For each wall side:
       1. Sample all heights along the wall line.
       2. Compute the median.
       3. Fill upward or cut downward to that median height.
 
-    Call this AFTER terraform_area and fill_all_holes, just before
-    FortificationBuilder.build().
+    Call this AFTER terraform_area, just before FortificationBuilder.build().
     """
     area      = analysis.best_area
     heightmap = analysis.heightmap_ground
@@ -171,387 +524,4 @@ def terraform_perimeter(
                     editor.placeBlock((wx, y, wz), Block("minecraft:air"))
                 heightmap[li, lj] = target_y
 
-
-# ---------------------------------------------------------------------------
-# Hole data container
-# ---------------------------------------------------------------------------
-
-@dataclass
-class HoleRegion:
-    """
-    A detected hole region with geometry and fill target pre-computed.
-
-    Attributes
-    ----------
-    cells         : (local_x, local_z) index pairs in this hole.
-    hole_radius   : max distance from centroid to any hole cell.
-    sample_radius : hole_radius + 3 (informational).
-    target_y      : Y level where the flat cap is placed (min rim height).
-    size          : number of cells in the hole.
-    strategy      : always "flat cap at rim" for this implementation.
-    wx_centre     : world X of the hole centroid (for /tp logging).
-    wz_centre     : world Z of the hole centroid.
-    """
-    cells:         list[tuple[int, int]]
-    hole_radius:   float
-    sample_radius: float
-    target_y:      int
-    size:          int
-    strategy:      str
-    wx_centre:     int = 0
-    wz_centre:     int = 0
-
-
-# ---------------------------------------------------------------------------
-# detect_hole_entries
-# ---------------------------------------------------------------------------
-
-def detect_hole_entries(
-    analysis:       WorldAnalysisResult,
-    hole_threshold: int = 2,
-) -> list[tuple[int, int]]:
-    """
-    Find seed world (x, z) coordinates for holes using the heightmap.
-
-    Three strategies combined:
-      1. Sharp pits    — cell strictly below min of all 8 neighbours.
-      2. Gradual bowls — cell significantly below 15x15 neighbourhood mean.
-      3. Water bowls   — water cell below 9x9 neighbourhood mean.
-
-    Ravines excluded: cells where heightmap_ground - heightmap_ocean_floor
-    exceeds 8 are deep chasms left for seal_cave_openings.
-
-    Returns one seed (world x, z) per connected hole region — the deepest
-    cell in each region is chosen as the BFS entry point.
-
-    Parameters
-    ----------
-    analysis        : WorldAnalysisResult
-    hole_threshold  : minimum deficit to flag as a hole (default 2)
-
-    Returns
-    -------
-    list of (wx, wz) world coordinate tuples
-    """
-    from scipy.ndimage import grey_erosion, binary_dilation, label as ndimage_label
-
-    heightmap  = analysis.heightmap_ground.astype(np.float32)
-    water_mask = analysis.water_mask.astype(bool)
-    area       = analysis.best_area
-    w, d       = heightmap.shape
-
-    # Ravine exclusion — deep chasms left for seal_cave_openings
-    depth_skip = 8
-    if analysis.heightmap_ocean_floor is not None:
-        chasm_mask = (
-            heightmap - analysis.heightmap_ocean_floor.astype(np.float32)
-        ) > depth_skip
-    else:
-        chasm_mask = np.zeros((w, d), dtype=bool)
-
-    # Strategy 1: sharp pits
-    footprint       = np.ones((3, 3), dtype=bool)
-    footprint[1, 1] = False
-    neighbour_min   = grey_erosion(heightmap, footprint=footprint, mode="nearest")
-    sharp_holes     = (neighbour_min - heightmap >= hole_threshold) & ~chasm_mask
-
-    # Strategy 2: gradual dry bowls
-    mean_wide     = uniform_filter(heightmap, size=15, mode="nearest")
-    gradual_bowls = (
-        (mean_wide - heightmap >= hole_threshold + 1)
-        & ~water_mask
-        & ~chasm_mask
-    )
-
-    # Strategy 3: water-filled bowls
-    mean_terrain = uniform_filter(heightmap, size=9, mode="nearest")
-    water_bowls  = (
-        water_mask
-        & (mean_terrain - heightmap >= hole_threshold)
-        & ~chasm_mask
-    )
-
-    water_buffer = binary_dilation(water_mask, iterations=1)
-    hole_mask    = (
-        ((sharp_holes | gradual_bowls) & ~water_buffer)
-        | water_bowls
-    )
-
-    n_sharp   = int(np.sum(sharp_holes & ~water_buffer))
-    n_gradual = int(np.sum(gradual_bowls & ~water_buffer))
-    n_water   = int(np.sum(water_bowls))
-    logger.info(
-        "detect_hole_entries: %d cells (%d sharp + %d gradual + %d water) threshold=%d.",
-        int(np.sum(hole_mask)), n_sharp, n_gradual, n_water, hole_threshold,
-    )
-
-    if not np.any(hole_mask):
-        return []
-
-    # One entry per connected region — deepest cell in each
-    labeled, num = ndimage_label(hole_mask)
-    entries: list[tuple[int, int]] = []
-
-    for hole_id in range(1, num + 1):
-        cells   = np.argwhere(labeled == hole_id)
-        depths  = [float(heightmap[int(c[0]), int(c[1])]) for c in cells]
-        deepest = cells[int(np.argmin(depths))]
-        wx, wz  = area.index_to_world(int(deepest[0]), int(deepest[1]))
-        entries.append((wx, wz))
-
-    logger.info("detect_hole_entries: %d entry points.", len(entries))
-    return entries
-
-
-# ---------------------------------------------------------------------------
-# flood_fill_hole
-# ---------------------------------------------------------------------------
-
-def flood_fill_hole(
-    editor:     Editor,
-    analysis:   WorldAnalysisResult,
-    entry_wx:   int,
-    entry_wz:   int,
-    max_radius: int = 30,
-) -> HoleRegion | None:
-    """
-    From a seed point, BFS outward on the heightmap surface to find
-    all cells that are part of the same depression.
-
-    Expansion logic:
-      - Neighbour at or below entry_y → part of the hole, expand.
-      - Neighbour above entry_y       → rim cell, record height, stop.
-      - Manhattan distance >= max_radius → stop expanding.
-
-    target_y = min(rim_y) — the Y where the ground starts dropping,
-    which is where the flat cap will be placed.
-
-    Parameters
-    ----------
-    editor      : GDPC Editor (not queried here — heightmap only)
-    analysis    : WorldAnalysisResult
-    entry_wx    : world X of the seed point
-    entry_wz    : world Z of the seed point
-    max_radius  : Manhattan distance limit for BFS (default 30)
-
-    Returns
-    -------
-    HoleRegion or None if entry is not a valid hole.
-    """
-    area      = analysis.best_area
-    heightmap = analysis.heightmap_ground
-    w, d      = heightmap.shape
-
-    try:
-        ix0, iz0 = area.world_to_index(entry_wx, entry_wz)
-    except ValueError:
-        return None
-
-    entry_y = int(heightmap[ix0, iz0])
-
-    visited:  set[tuple[int, int]] = {(ix0, iz0)}
-    hole_xz:  list[tuple[int, int]] = [(ix0, iz0)]
-    rim_y:    list[int] = []
-    queue:    deque[tuple[int, int]] = deque([(ix0, iz0)])
-    cx_sum    = ix0
-    cz_sum    = iz0
-
-    while queue:
-        ix, iz = queue.popleft()
-
-        for dix, diz in ((1,0),(-1,0),(0,1),(0,-1)):
-            nix, niz = ix + dix, iz + diz
-            if not (0 <= nix < w and 0 <= niz < d):
-                continue
-            if (nix, niz) in visited:
-                continue
-            visited.add((nix, niz))
-
-            ny = int(heightmap[nix, niz])
-
-            if abs(nix - ix0) + abs(niz - iz0) >= max_radius:
-                rim_y.append(ny)
-                continue
-
-            if ny <= entry_y:
-                # Still inside the depression — expand
-                hole_xz.append((nix, niz))
-                cx_sum += nix
-                cz_sum += niz
-                queue.append((nix, niz))
-            else:
-                # Higher than entry — this is the rim
-                rim_y.append(ny)
-
-    if not rim_y:
-        return None
-
-    hole_size   = len(hole_xz)
-    cx_mean     = cx_sum / hole_size
-    cz_mean     = cz_sum / hole_size
-    hole_radius = float(max(
-        np.sqrt((ix - cx_mean) ** 2 + (iz - cz_mean) ** 2)
-        for ix, iz in hole_xz
-    )) if hole_size > 1 else 1.0
-
-    # Cap Y = minimum rim height = where the hole starts dropping
-    rim_arr  = np.array(rim_y, dtype=np.float32)
-    target_y = int(np.min(rim_arr))
-
-    cx_local   = max(0, min(int(round(cx_mean)), w - 1))
-    cz_local   = max(0, min(int(round(cz_mean)), d - 1))
-    wx_c, wz_c = area.index_to_world(cx_local, cz_local)
-
-    logger.info(
-        "  Hole: size=%d  radius=%.1f  rim_n=%d  target_y=%d  "
-        "centre=(%d,%d,%d)  /tp %d %d %d",
-        hole_size, hole_radius, len(rim_y), target_y,
-        wx_c, target_y, wz_c,
-        wx_c, target_y + 5, wz_c,
-    )
-
-    return HoleRegion(
-        cells         = hole_xz,
-        hole_radius   = hole_radius,
-        sample_radius = hole_radius + 3,
-        target_y      = target_y,
-        size          = hole_size,
-        strategy      = "flat cap at rim",
-        wx_centre     = wx_c,
-        wz_centre     = wz_c,
-    )
-
-
-# ---------------------------------------------------------------------------
-# fill_holes
-# ---------------------------------------------------------------------------
-
-def fill_holes(
-    editor:     Editor,
-    analysis:   WorldAnalysisResult,
-    regions:    list[HoleRegion],
-    fill_block: str = "minecraft:dirt",
-    top_block:  str = "minecraft:grass_block",
-    cap_depth:  int = 3,
-) -> None:
-    """
-    Place a flat cap of cap_depth layers over each hole region.
-
-    For each cell in the region that is below target_y:
-      - Places top_block at target_y (visible surface).
-      - Places fill_block at target_y-1 down to target_y-(cap_depth-1).
-      - Updates analysis.heightmap_ground in-place.
-
-    Logs Y range, block count, and /tp command for each region.
-
-    Parameters
-    ----------
-    editor      : GDPC Editor
-    analysis    : WorldAnalysisResult — heightmap_ground updated in-place
-    regions     : list from flood_fill_hole()
-    fill_block  : subsurface cap material (default: dirt)
-    top_block   : surface cap material (default: grass_block)
-    cap_depth   : layers to place downward from target_y (default 3)
-    """
-    area = analysis.best_area
-
-    for region in regions:
-        target_y = region.target_y
-        y_bottom = target_y - (cap_depth - 1)
-        placed   = 0
-
-        for cx, cz in region.cells:
-            current_y = int(analysis.heightmap_ground[cx, cz])
-            if current_y >= target_y:
-                continue
-
-            wx, wz = area.index_to_world(cx, cz)
-
-            # Top surface cap
-            editor.placeBlock((wx, target_y, wz), Block(top_block))
-
-            # Fill layers below the cap
-            for dy in range(1, cap_depth):
-                editor.placeBlock((wx, target_y - dy, wz), Block(fill_block))
-
-            analysis.heightmap_ground[cx, cz] = target_y
-            placed += 1
-
-        logger.info(
-            "  Cap placed (size=%d  depth=%d): %d blocks  "
-            "Y top=%d  Y bottom=%d  "
-            "centre=(%d,%d,%d)  /tp %d %d %d",
-            region.size, cap_depth, placed,
-            target_y, y_bottom,
-            region.wx_centre, target_y, region.wz_centre,
-            region.wx_centre, target_y + 5, region.wz_centre,
-        )
-
-
-# ---------------------------------------------------------------------------
-# fill_all_holes
-# ---------------------------------------------------------------------------
-
-def fill_all_holes(
-    editor:         Editor,
-    analysis:       WorldAnalysisResult,
-    fill_block:     str = "minecraft:dirt",
-    top_block:      str = "minecraft:grass_block",
-    hole_threshold: int = 2,
-    max_radius:     int = 30,
-    cap_depth:      int = 3,
-) -> None:
-    """
-    Detect entry points, BFS-expand each into a HoleRegion, then place caps.
-
-    Catches sharp pits, gradual dry bowls, and water-filled depressions.
-    Ravines and open caves are left for seal_cave_openings (terrain_clearer).
-
-    Parameters
-    ----------
-    editor          : GDPC Editor
-    analysis        : WorldAnalysisResult — heightmap_ground updated in-place
-    fill_block      : subsurface cap material (default: dirt)
-    top_block       : surface cap material (default: grass_block)
-    hole_threshold  : minimum deficit to flag as hole entry (default 2)
-    max_radius      : BFS Manhattan radius limit per hole (default 30)
-    cap_depth       : layers to place downward from cap surface (default 3)
-    """
-    entries = detect_hole_entries(analysis, hole_threshold=hole_threshold)
-    if not entries:
-        logger.info("fill_all_holes: no hole entries detected.")
-        return
-
-    logger.info("fill_all_holes: %d entry points to process.", len(entries))
-
-    regions:      list[HoleRegion]    = []
-    filled_cells: set[tuple[int,int]] = set()
-
-    for wx, wz in entries:
-        try:
-            ix, iz = analysis.best_area.world_to_index(wx, wz)
-        except ValueError:
-            continue
-
-        if (ix, iz) in filled_cells:
-            continue  # already covered by a previous region
-
-        region = flood_fill_hole(editor, analysis, wx, wz, max_radius=max_radius)
-        if region is None:
-            continue
-
-        regions.append(region)
-        for cx, cz in region.cells:
-            filled_cells.add((cx, cz))
-
-    if not regions:
-        logger.info("fill_all_holes: no valid hole regions found.")
-        return
-
-    fill_holes(
-        editor, analysis, regions,
-        fill_block=fill_block,
-        top_block=top_block,
-        cap_depth=cap_depth,
-    )
-    logger.info("fill_all_holes: done — %d region(s) capped.", len(regions))
+# (hole/cave filling removed — lava pools are handled by clear_lava_pools in terrain_clearer)

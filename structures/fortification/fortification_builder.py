@@ -15,6 +15,11 @@ from structures.tower.tower_builder import TowerBuilder
 
 logger = logging.getLogger(__name__)
 
+# How many blocks below the sampled ground Y to extend the foundation.
+# A deeper footing ensures the wall contacts the actual terrain even when the
+# heightmap value is a clamped edge-pixel for positions outside best_area.
+_FOUND_DEPTH: int = 6
+
 
 class FortificationBuilder:
     """
@@ -163,6 +168,45 @@ class FortificationBuilder:
             return wx, area.z_from, wx, area.z_to
 
     @staticmethod
+    def _sample_ground_y(
+        wx: int,
+        wz: int,
+        area: BuildArea,
+        heightmap,
+    ) -> int:
+        """
+        Return the best estimate of ground Y at world position (wx, wz).
+
+        For positions inside best_area the heightmap value is accurate.
+        For positions outside (wall/tower positions beyond the area boundary)
+        the raw index would be clamped to an edge pixel, which can be several
+        blocks *above* the actual terrain.  To avoid floating walls we take
+        the minimum of a small neighbourhood of edge pixels, which errs on
+        the side of lower rather than higher.
+        """
+        li_raw = wx - area.x_from
+        lj_raw = wz - area.z_from
+        h, d   = heightmap.shape
+
+        inside = (0 <= li_raw < h) and (0 <= lj_raw < d)
+        if inside:
+            return int(heightmap[li_raw, lj_raw])
+
+        # Outside: scan a 3×3 neighbourhood of the nearest edge pixel
+        # and take the minimum so the wall never floats.
+        li0 = max(0, min(h - 1, li_raw))
+        lj0 = max(0, min(d - 1, lj_raw))
+        min_y = int(heightmap[li0, lj0])
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                ni = max(0, min(h - 1, li0 + di))
+                nj = max(0, min(d - 1, lj0 + dj))
+                v  = int(heightmap[ni, nj])
+                if v < min_y:
+                    min_y = v
+        return min_y
+
+    @staticmethod
     def _in_box(
         wx: int,
         wz: int,
@@ -220,9 +264,7 @@ class FortificationBuilder:
             if self._in_box(wx, wz, building_boxes):
                 continue
 
-            li = max(0, min(heightmap.shape[0] - 1, wx - area.x_from))
-            lj = max(0, min(heightmap.shape[1] - 1, wz - area.z_from))
-            gy = int(heightmap[li, lj])
+            gy = self._sample_ground_y(wx, wz, area, heightmap)
 
             is_gate = has_gate and abs(step - gate_mid) <= gate_half
 
@@ -253,19 +295,19 @@ class FortificationBuilder:
         wall_block: str, accent_block: str, found_block: str,
         light_block: str, light_props: dict,
     ) -> None:
+        top_y = gy + wall_h
+
         for t in range(wall_t):
             ox = 0 if along_x else t
             oz = t if along_x else 0
-            self.editor.placeBlock((wx + ox, gy - 1, wz + oz), Block(found_block))
+            x, z = wx + ox, wz + oz
+            # Foundation extends several blocks underground so the wall always
+            # contacts the ground even when the heightmap value is slightly off.
+            for y in range(gy - _FOUND_DEPTH, gy):
+                self.editor.placeBlock((x, y, z), Block(found_block))
+            for y in range(gy, top_y):
+                self.editor.placeBlock((x, y, z), Block(wall_block))
 
-        for dy in range(wall_h):
-            y = gy + dy
-            for t in range(wall_t):
-                ox = 0 if along_x else t
-                oz = t if along_x else 0
-                self.editor.placeBlock((wx + ox, y, wz + oz), Block(wall_block))
-
-        top_y     = gy + wall_h
         is_merlon = (step % 3 != 2)
         if is_merlon:
             self.editor.placeBlock((wx, top_y, wz), Block(accent_block))
@@ -310,31 +352,26 @@ class FortificationBuilder:
         is_centre: bool, light_props: dict,
     ) -> None:
         gate_h = 3
+        top_y  = gy + wall_h
 
         for t in range(wall_t):
-            ox = 0 if along_x else t
-            oz = t if along_x else 0
-            self.editor.placeBlock((wx + ox, gy - 1, wz + oz), Block(found_block))
-
-        for dy in range(wall_h):
-            y = gy + dy
-            for t in range(wall_t):
-                ox  = 0 if along_x else t
-                oz  = t if along_x else 0
-                wx_ = wx + ox
-                wz_ = wz + oz
-
+            ox  = 0 if along_x else t
+            oz  = t if along_x else 0
+            x, z = wx + ox, wz + oz
+            for y in range(gy - _FOUND_DEPTH, gy):
+                self.editor.placeBlock((x, y, z), Block(found_block))
+            for dy in range(wall_h):
+                y = gy + dy
                 if dy < gate_h:
                     if t == 0:
-                        self.editor.placeBlock((wx_, y, wz_), Block(window_block))
+                        self.editor.placeBlock((x, y, z), Block(window_block))
                     else:
-                        self.editor.placeBlock((wx_, y, wz_), Block("minecraft:air"))
+                        self.editor.placeBlock((x, y, z), Block("minecraft:air"))
                 elif dy == gate_h:
-                    self.editor.placeBlock((wx_, y, wz_), Block(accent_block))
+                    self.editor.placeBlock((x, y, z), Block(accent_block))
                 else:
-                    self.editor.placeBlock((wx_, y, wz_), Block(wall_block))
+                    self.editor.placeBlock((x, y, z), Block(wall_block))
 
-        top_y = gy + wall_h
         self.editor.placeBlock((wx, top_y, wz), Block(accent_block))
 
         if is_centre:

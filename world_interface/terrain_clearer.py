@@ -101,7 +101,9 @@ def remove_sparse_top(
     districts: Districts | None = None,
     settlement_config: SettlementConfig | None = None,
     sparse_threshold: float = 0.08,
-    min_height_above_dominant: int = 3,
+    min_height_above_dominant: int = 5,
+    max_height_above_dominant: int = 12,
+    max_terrain_std: float = 12.0,
     building_buffer: int = 2,
     edge_buffer: int = 1,
     slope_width: int = 2,
@@ -145,12 +147,20 @@ def remove_sparse_top(
         gap_block_samples: Cells sampled to determine gap fill block.
     """
     area   = analysis.best_area
-    # Work directly on the full heightmap — it is already sized to best_area.
-    # ix0/iz0 are always (0,0) since the heightmap is indexed relative to best_area,
-    # so we skip the world_to_index call and use simple offsets for world conversion.
     submap = analysis.heightmap_ground.copy()
     w, d   = submap.shape
     ix0 = iz0 = 0   # submap[cx, cz] → world (area.x_from + cx, area.z_from + cz)
+
+    # Early exit: if the terrain is highly irregular (mountains, cliffs, snowy
+    # peaks) the per-height-level cluster approach would shave the entire
+    # mountain down to the valley floor.  Skip in that case.
+    terrain_std = float(np.std(submap))
+    if terrain_std > max_terrain_std:
+        logger.info(
+            "remove_sparse_top: terrain std=%.1f > %.1f — skipping (mountainous area).",
+            terrain_std, max_terrain_std,
+        )
+        return
 
     # ------------------------------------------------------------------
     # Step 1: find dominant height level
@@ -217,6 +227,8 @@ def remove_sparse_top(
         y = int(y)
         if y <= dominant_y:
             continue   # only remove things above the dominant level
+        if y - dominant_y > max_height_above_dominant:
+            continue   # too high above dominant — part of real terrain, not a blob
 
         labeled, sizes = height_clusters.get(y, (None, None))
         if labeled is None:
@@ -316,6 +328,8 @@ def remove_sparse_top(
             y = int(y)
             if y <= dominant_y:
                 continue
+            if y - dominant_y > max_height_above_dominant:
+                continue   # never shave real mountain terrain
 
             flat_mask      = (current_submap == y)
             labeled, num   = ndimage_label(flat_mask)
@@ -413,120 +427,17 @@ def remove_sparse_top(
     analysis.heightmap_ground[:, :] = submap
 
 
-def fill_below_surface(
-    editor: Editor,
-    analysis: WorldAnalysisResult,
-    target_height: int,
-    sample_radius: int = 3,
-) -> None:
-    """
-    Fill all cells below `target_height` using blocks sampled from neighbouring
-    surface cells, weighted by inverse distance.
-
-    For each cell whose heightmap value is below `target_height`, the method
-    samples surface blocks from a square neighbourhood of `sample_radius` cells.
-    Each neighbour contributes weight = 1 / distance, so closer neighbours
-    influence the block choice more strongly.  The block with the highest total
-    weight is used to fill from the cell's current surface up to `target_height`.
-
-    The heightmap is updated in-place so subsequent planning sees correct heights.
-
-    Args:
-        editor: GDPC Editor instance (buffering=True recommended).
-        analysis: WorldAnalysisResult — heightmap_ground updated in-place.
-        target_height: Y level to fill up to (inclusive).
-        sample_radius: Chebyshev radius of the neighbourhood to sample (default 3).
-    """
-    area      = analysis.best_area
-    heightmap = analysis.heightmap_ground
-    w, d      = heightmap.shape
-
-    # Pre-build offset grid with inverse-distance weights (exclude centre cell).
-    offsets: list[tuple[int, int, float]] = []
-    for dx in range(-sample_radius, sample_radius + 1):
-        for dz in range(-sample_radius, sample_radius + 1):
-            if dx == 0 and dz == 0:
-                continue
-            dist = (dx * dx + dz * dz) ** 0.5
-            offsets.append((dx, dz, 1.0 / dist))
-
-    # Find all cells below target_height
-    below_mask = heightmap < target_height
-    cells      = np.argwhere(below_mask)
-
-    if len(cells) == 0:
-        return
-
-    for cx, cz in cells:
-        cx, cz    = int(cx), int(cz)
-        cell_y    = int(heightmap[cx, cz])
-
-        if cell_y >= target_height:
-            continue
-
-        # ------------------------------------------------------------------
-        # Sample neighbours — weighted by inverse distance
-        # ------------------------------------------------------------------
-        block_weights: dict[str, float] = {}
-
-        for dx, dz, weight in offsets:
-            nx, nz = cx + dx, cz + dz
-            if not (0 <= nx < w and 0 <= nz < d):
-                continue
-
-            neighbour_y = int(heightmap[nx, nz])
-            # Only sample neighbours that are at or above target to get
-            # representative surface blocks, not other below-target cells.
-            if neighbour_y < target_height:
-                continue
-
-            wx, wz  = area.index_to_world(nx, nz)
-            block   = editor.getBlock((wx, neighbour_y, wz))
-            bid     = block.id.lower()
-
-            if not bid or bid == "minecraft:air":
-                continue
-
-            block_weights[bid] = block_weights.get(bid, 0.0) + weight
-
-        if not block_weights:
-            # No valid neighbours found — skip this cell
-            continue
-
-        # Most common block by weighted vote
-        fill_id    = max(block_weights, key=block_weights.get)
-        fill_block = Block(fill_id)
-
-        # ------------------------------------------------------------------
-        # Fill from cell_y+1 up to target_height (inclusive)
-        # ------------------------------------------------------------------
-        wx, wz    = area.index_to_world(cx, cz)
-        positions = [(wx, wy, wz) for wy in range(cell_y + 1, target_height + 1)]
-        if positions:
-            editor.placeBlock(positions, fill_block)
-
-        # Update heightmap
-        heightmap[cx, cz] = target_height
-
-
-def seal_cave_openings(
+def clear_lava_pools(
     editor: Editor,
     analysis: WorldAnalysisResult,
 ) -> None:
     """
-    Seal depressions by placing a flat dirt layer at the dominant ground level.
+    Clear surface lava pools and place a grass cap over them.
 
-    Algorithm
-    ---------
-    1. Compute target_y = mode of all non-water cell heights (the most common
-       ground level, e.g. Y=64).
-    2. Find all non-water cells below target_y.
-    3. Label connected groups of those cells.
-    4. For each group, compute the bounding rectangle in (x, z).
-    5. Place a single layer of minecraft:dirt at target_y across the entire
-       bounding rectangle, then update the heightmap.
-
-    No column scanning, no getBlock calls — just one flat layer per hole.
+    Uses the pre-cached ``analysis.surface_blocks`` array to identify lava
+    cells without any HTTP reads.  For each lava cell, air is placed from the
+    lava's surface Y up to Y+5 to ensure the column is fully cleared, then a
+    grass_block is placed on top.  The heightmap is updated in-place.
 
     Args:
         editor:   GDPC Editor instance (buffering=True recommended).
@@ -536,79 +447,26 @@ def seal_cave_openings(
     heightmap  = analysis.heightmap_ground
     water_mask = analysis.water_mask.astype(bool)
 
-    # target_y = mode of non-water land heights
-    land_heights = heightmap[~water_mask].astype(np.int32)
-    if land_heights.size == 0:
-        land_heights = heightmap.astype(np.int32).ravel()
+    lava_mask = np.vectorize(
+        lambda b: "lava" in str(b).lower()
+    )(analysis.surface_blocks).astype(bool) & ~water_mask
 
-    counts   = np.bincount(land_heights - land_heights.min())
-    target_y = int(land_heights.min() + np.argmax(counts))
-
-    # Detect holes by steep topographic drop: a cell is a hole if it is at
-    # least drop_threshold blocks below any of its cardinal neighbours.
-    # This targets sharp cave/sinkhole edges and ignores gentle river banks.
-    h = heightmap.astype(np.float32)
-    neighbour_max = np.full(h.shape, -np.inf, dtype=np.float32)
-    neighbour_max[:-1, :] = np.maximum(neighbour_max[:-1, :], h[1:,  :])
-    neighbour_max[1:,  :] = np.maximum(neighbour_max[1:,  :], h[:-1, :])
-    neighbour_max[:,  :-1] = np.maximum(neighbour_max[:, :-1], h[:,  1:])
-    neighbour_max[:,   1:] = np.maximum(neighbour_max[:,  1:], h[:,  :-1])
-    neighbour_max = np.where(np.isinf(neighbour_max), h, neighbour_max)
-
-    drop_threshold = 2
-    hole_mask = (
-        ((neighbour_max - h) >= drop_threshold) &
-        (heightmap < target_y) &
-        ~water_mask
-    )
-
-    if not np.any(hole_mask):
+    lava_cells = np.argwhere(lava_mask)
+    if len(lava_cells) == 0:
+        logger.info("clear_lava_pools: no surface lava found.")
         return
 
-    labeled, num_holes = ndimage_label(hole_mask)
+    logger.info("clear_lava_pools: clearing %d lava cell(s).", len(lava_cells))
 
-    # Size filter: ignore groups that are noise (< min_cells) or large
-    # depressions / valleys (> max_cells) that should not be filled.
-    min_cells = 2
-    max_cells = 150
+    for ix, iz in lava_cells:
+        ix, iz = int(ix), int(iz)
+        wx, wz = area.index_to_world(ix, iz)
+        cell_y = int(heightmap[ix, iz])
 
-    logger.info(
-        "seal_cave_openings: target_y=%d, %d raw group(s) before size filter.",
-        target_y, num_holes,
-    )
+        clear_positions = [(wx, wy, wz) for wy in range(cell_y, cell_y + 6)]
+        editor.placeBlock(clear_positions, Block("minecraft:air"))
+        editor.placeBlock((wx, cell_y, wz), Block("minecraft:grass_block"))
 
-    for hole_id in range(1, num_holes + 1):
-        cells = np.argwhere(labeled == hole_id)
-
-        if len(cells) < min_cells:
-            logger.debug("  Hole %d: %d cell(s) — too small, skipped.", hole_id, len(cells))
-            continue
-        if len(cells) > max_cells:
-            logger.debug("  Hole %d: %d cell(s) — too large, skipped.", hole_id, len(cells))
-            continue
-
-        # Bounding rectangle in local grid indices
-        ix_min, iz_min = cells[:, 0].min(), cells[:, 1].min()
-        ix_max, iz_max = cells[:, 0].max(), cells[:, 1].max()
-
-        # Place a flat dirt layer at target_y across the entire bounding box
-        positions = []
-        for ix in range(int(ix_min), int(ix_max) + 1):
-            for iz in range(int(iz_min), int(iz_max) + 1):
-                wx, wz = area.index_to_world(ix, iz)
-                positions.append((wx, target_y, wz))
-
-        editor.placeBlock(positions, Block("minecraft:dirt"))
-
-        # Update heightmap for all cells in the bounding box
-        heightmap[ix_min:ix_max + 1, iz_min:iz_max + 1] = np.maximum(
-            heightmap[ix_min:ix_max + 1, iz_min:iz_max + 1],
-            target_y,
-        )
-
-        logger.debug(
-            "  Hole %d: bbox ix=[%d,%d] iz=[%d,%d] → y=%d (%d blocks placed).",
-            hole_id, ix_min, ix_max, iz_min, iz_max, target_y, len(positions),
-        )
+        heightmap[ix, iz] = cell_y
 
 

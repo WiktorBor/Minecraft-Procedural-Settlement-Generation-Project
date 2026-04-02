@@ -128,8 +128,8 @@ class TerrainConfig:
     top_building_score_percentile: float = 0.25
 
     # Minimum best-area dimensions — PatchSelector expands to meet these
-    min_best_area_width: int = 64
-    min_best_area_depth: int = 64
+    min_best_area_width: int = 125
+    min_best_area_depth: int = 125
 
     # Biome suitability weights [0, 1] for placement scoring
     biome_weights: dict[str, float] = field(default_factory=lambda: {

@@ -19,7 +19,7 @@ from structures.base.structure_selector import StructureSelector
 from structures.decoration.district_marker import DistrictMarker
 from structures.fortification.fortification_builder import FortificationBuilder
 from world_interface.road_placer import RoadBuilder
-from world_interface.terrain_clearer import remove_sparse_top, seal_cave_openings, clear_area
+from world_interface.terrain_clearer import remove_sparse_top, clear_lava_pools, clear_area
 from world_interface.terraforming import terraform_area
 
 logger = logging.getLogger(__name__)
@@ -98,12 +98,12 @@ class SettlementGenerator:
 
         logger.info("  ✓ Terrain smoothed.")
 
-        seal_cave_openings(
+        clear_lava_pools(
             editor=self.editor,
             analysis=self.analysis,
         )
 
-        logger.info("  ✓ Cave openings sealed.")
+        logger.info("  ✓ Surface lava pools cleared.")
 
         # Recompute slope and roughness maps from the cleaned heightmap so the
         # plot planner's _valid() checks reflect the updated terrain rather than
