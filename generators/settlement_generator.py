@@ -18,8 +18,10 @@ from structures.base.structure_selector import StructureSelector
 from structures.decoration.district.district_marker import DistrictMarker
 from structures.fortification.fortification_builder import FortificationBuilder
 from world_interface.road_placer import RoadBuilder
-from world_interface.terrain_clearer import remove_sparse_top, seal_cave_openings, clear_area
-from world_interface.terraforming import terraform_area
+from world_interface.terraforming import (
+    remove_sparse_top, fill_depressions, clear_area, terraform_perimeter,
+    recompute_all_maps,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,25 +92,18 @@ class SettlementGenerator:
         )
         logger.info("  ✓ Sparse terrain clusters removed.")
 
-        terraform_area(
-            editor=self.editor,
-            analysis=self.analysis
-        )
-
-        logger.info("  ✓ Terrain smoothed.")
-
-        seal_cave_openings(
+        fill_depressions(
             editor=self.editor,
             analysis=self.analysis,
         )
 
-        logger.info("  ✓ Cave openings sealed.")
+        logger.info("  ✓ Terrain depressions filled.")
 
         # Recompute slope and roughness maps from the cleaned heightmap so the
         # plot planner's _valid() checks reflect the updated terrain rather than
         # the original bumpy surface that was just cleaned.
-        self._recompute_terrain_maps()
-        logger.info("  ✓ Terrain maps recomputed after cleanup.")
+        recompute_all_maps(self.editor, self.analysis, self.terrain_config)
+        logger.info("  ✓ All terrain maps recomputed after cleanup.")
 
         # --- Phase 3a: Placing districts fountains... ---
         district_marker = DistrictMarker(
@@ -119,6 +114,9 @@ class SettlementGenerator:
         logger.info("[Phase 3a] Placing district fountains...")
         fountain_cells = district_marker.build(state.districts)
         state.add_taken(fountain_cells)
+        # Track which district indices received a fountain so selectors
+        # can suppress decoration in those districts.
+        fountain_district_ids: set[int] = set(range(len(state.districts.district_list)))
 
         # --- Phase 3a.5: Central plaza ---
         # Plaza center and radius were pre-computed in plan_districts() so that
@@ -161,6 +159,35 @@ class SettlementGenerator:
             state.add_road_cells(ring_cells)
             logger.info("  ✓ Ring road generated (%d cells).", len(ring_cells))
 
+        # --- Phase 3a.6: Spire tower at best_area centroid ---
+        # One spire tower placed at the geographic centre of the entire build
+        # area — not on any plot, not in any district pool.
+        area    = self.analysis.best_area
+        scx     = area.x_from + area.width  // 2
+        scz     = area.z_from + area.depth  // 2
+        try:
+            sli, slj = area.world_to_index(scx, scz)
+            scy      = int(self.analysis.heightmap_ground[sli, slj])
+            spire_size = 6
+            spire_plot = Plot(
+                x=scx - spire_size, z=scz - spire_size,
+                width=spire_size * 2, depth=spire_size * 2, y=scy,
+            )
+            from structures.misc.spire_tower import SpireTower
+            SpireTower().build(self.editor, spire_plot, default_palette)
+            # Mark spire footprint as taken
+            spire_taken = {
+                (scx + dx, scz + dz)
+                for dx in range(-spire_size - 2, spire_size + 3)
+                for dz in range(-spire_size - 2, spire_size + 3)
+            }
+            state.add_taken(spire_taken)
+            logger.info(
+                "  ✓ Spire tower placed at best_area centre (%d, %d).", scx, scz
+            )
+        except Exception:
+            logger.warning("  Spire tower placement failed.", exc_info=True)
+
         # --- Phase 3b: Road planning ---
         self.planner.plan_roads(state)
         road_builder = RoadBuilder(
@@ -202,6 +229,7 @@ class SettlementGenerator:
                 config=self.settlement_config,
                 palette=pal,
                 has_water=has_water,
+                fountain_district_ids=fountain_district_ids,
             )
             for idx, pal in district_palettes.items()
         }
@@ -327,20 +355,3 @@ class SettlementGenerator:
                         cells.add((wx, wz))
 
         return [RoadCell(wx, wz, type="main_road") for wx, wz in cells]
-
-    def _recompute_terrain_maps(self) -> None:
-        """
-        Recompute slope_map and roughness_map from the current heightmap_ground.
-        Called after terrain cleanup so planners see corrected terrain metrics.
-        """
-        from scipy.ndimage import maximum_filter, minimum_filter
-
-        h    = self.analysis.heightmap_ground.astype(np.float32)
-        gx, gz = np.gradient(h)
-        self.analysis.slope_map = np.sqrt(gx ** 2 + gz ** 2)
-
-        radius = self.terrain_config.radius
-        size   = 2 * radius + 1
-        self.analysis.roughness_map = (
-            maximum_filter(h, size=size) - minimum_filter(h, size=size)
-        )

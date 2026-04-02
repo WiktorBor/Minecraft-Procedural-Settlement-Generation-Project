@@ -194,22 +194,29 @@ class HouseGrammar:
             has_porch   = False
             door_face   = random.randint(0, 1)
         else:
-            wall_h      = random.choice([3, 3, 4])
-            has_upper   = (w >= 7 and d >= 7 and random.random() < 0.65)
-            upper_h     = random.randint(3, 4) if has_upper else 0
-            span        = min(w, d)
-            if w >= 9 and d >= 9 and random.random() < 0.25:
+            wall_h    = random.choice([3, 3, 4])
+            has_upper = (w >= 7 and d >= 7 and random.random() < 0.65)
+            upper_h   = random.randint(3, 4) if has_upper else 0
+
+            span = min(w, d)
+            long = max(w, d)
+
+            # Cross-gabled: relaxed from (both >= 9) to (span >= 7 AND long >= 9)
+            # so 7×9, 7×11, 9×11 plots can get a cross roof too.
+            # Probability raised from 0.25 → 0.55 so it competes fairly with
+            # gabled in the scorer retry loop.
+            if span >= 7 and long >= 9 and random.random() < 0.55:
                 roof_type = "cross"
             elif span <= 7 and random.random() < 0.30:
                 roof_type = "pyramid"
             else:
                 roof_type = "gabled"
+
             smoke_block = palette_get(self.palette, "smoke", "minecraft:campfire")
             has_chimney = ("campfire" in smoke_block) and (random.random() < 0.80)
             has_porch   = random.random() < 0.45
             door_face   = 0 if random.random() < 0.75 else 1
 
-        # editor is set to self.editor as a placeholder; _place() will override it
         return Ctx(
             x=x, y=y, z=z,
             w=w, d=d,
@@ -222,20 +229,6 @@ class HouseGrammar:
             door_face=door_face,
             palette=self.palette,
             editor=self.editor,
-        )
-
-    def _ctx_to_params(self, ctx: Ctx) -> HouseParams:
-        return HouseParams(
-            w=ctx.w, d=ctx.d,
-            wall_h=ctx.wall_h,
-            has_upper=ctx.has_upper,
-            upper_h=ctx.upper_h,
-            has_chimney=ctx.has_chimney,
-            has_porch=ctx.has_porch,
-            has_extension=False,
-            roof_type=ctx.roof_type if ctx.roof_type in ("gabled", "cross") else "gabled",
-            foundation_h=1,
-            ext_w=0,
         )
 
 
