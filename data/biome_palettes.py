@@ -35,6 +35,8 @@ class BiomePalette(TypedDict, total=False):
     ceiling_slab:   str
     accent_beam:    str
     interior_light: str
+    path_edge:      str
+    path_slab:      str
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +52,8 @@ BIOME_PALETTES: dict[str, BiomePalette] = {
         "floor":          "minecraft:oak_planks",
         "foundation":     "minecraft:cobblestone",
         "path":           "minecraft:dirt_path",
+        "path_edge":      "minecraft:coarse_dirt",
+        "path_slab":      "minecraft:oak_slab",
         "accent":         "minecraft:oak_log",
         "accent_beam":    "minecraft:stripped_oak_log",
         "light":          "minecraft:lantern",
@@ -69,6 +73,8 @@ BIOME_PALETTES: dict[str, BiomePalette] = {
         "floor":          "minecraft:sandstone",
         "foundation":     "minecraft:sandstone",
         "path":           "minecraft:sand",
+        "path_edge":      "minecraft:smooth_sandstone",
+        "path_slab":      "minecraft:sandstone_slab",
         "accent":         "minecraft:cut_sandstone",
         "accent_beam":    "minecraft:stripped_oak_log",
         "light":          "minecraft:lantern",
@@ -88,6 +94,8 @@ BIOME_PALETTES: dict[str, BiomePalette] = {
         "floor":          "minecraft:spruce_planks",
         "foundation":     "minecraft:stone",
         "path":           "minecraft:gravel",
+        "path_edge":      "minecraft:cobblestone",
+        "path_slab":      "minecraft:spruce_slab",
         "accent":         "minecraft:spruce_log",
         "accent_beam":    "minecraft:stripped_spruce_log",
         "light":          "minecraft:lantern",
@@ -107,6 +115,8 @@ BIOME_PALETTES: dict[str, BiomePalette] = {
         "floor":          "minecraft:stone_bricks",
         "foundation":     "minecraft:cobblestone",
         "path":           "minecraft:cobblestone",
+        "path_edge":      "minecraft:gravel",
+        "path_slab":      "minecraft:cobblestone_slab",
         "accent":         "minecraft:stone",
         "accent_beam":    "minecraft:stripped_spruce_log",
         "light":          "minecraft:lantern",
@@ -126,6 +136,8 @@ BIOME_PALETTES: dict[str, BiomePalette] = {
         "floor":          "minecraft:spruce_planks",
         "foundation":     "minecraft:cobblestone",
         "path":           "minecraft:cobblestone",
+        "path_edge":      "minecraft:gravel",
+        "path_slab":      "minecraft:cobblestone_slab",
         "accent":         "minecraft:stripped_dark_oak_log",
         "accent_beam":    "minecraft:stripped_spruce_log",
         "light":          "minecraft:lantern",

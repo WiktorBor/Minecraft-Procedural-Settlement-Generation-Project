@@ -10,8 +10,10 @@ from gdpc.editor import Editor
 from data.analysis_results import WorldAnalysisResult
 from data.biome_palettes import BiomePalette, get_biome_palette
 from data.configurations import SettlementConfig, TerrainConfig
-from data.settlement_entities import Building
+from data.settlement_entities import Building, RoadCell
 from data.settlement_state import SettlementState
+from utils.astar import find_path
+from utils.walkable_grid import build_cost_grid
 from planning.palette_mapper import PaletteMapper
 from planning.settlement_planner import SettlementPlanner
 from structures.base.registry import get_structure
@@ -240,9 +242,20 @@ class SettlementGenerator:
                 x=plot.x, z=plot.z,
                 width=plot.width, depth=plot.depth,
                 type=template_key,
+                facing=plot.facing,
             ))
 
         logger.info("  ✓ %d buildings generated.", state.building_count)
+
+        # --- Phase 5: Building connectors ---
+        # For each placed building, run A* from the nearest road cell to the
+        # building's front door and place a path using the same road block.
+        logger.info("[Phase 5] Placing building connector paths...")
+        connector_cells = self._build_connectors(state)
+        if connector_cells:
+            road_builder.build(connector_cells)
+            state.add_road_cells(connector_cells)
+        logger.info("  ✓ %d connector cells placed.", len(connector_cells))
 
         # --- Phase 6: Fortification ---
         logger.info("[Phase 6] Building fortification...")
@@ -261,6 +274,135 @@ class SettlementGenerator:
         logger.info("  ✓ All blocks placed.")
 
         return state
+
+    def _build_connectors(self, state: SettlementState) -> list[RoadCell]:
+        """
+        For each placed building, A*-path from the nearest road cell to the
+        building's front door and return those cells as RoadCell objects.
+
+        Connector paths are 1-2 blocks wide and use the ``connector`` type so
+        the RoadBuilder renders them as narrow village footpaths.
+        """
+        from utils.path_utils import expand_path_to_width
+
+        area      = self.analysis.best_area
+        heightmap = self.analysis.heightmap_ground
+        water     = self.analysis.water_mask.astype(bool)
+
+        if not state._road_coords:
+            return []
+
+        building_mask = np.zeros(heightmap.shape, dtype=bool)
+        for b in state.buildings:
+            try:
+                li0, lj0 = area.world_to_index(b.x_from, b.z_from)
+                li1, lj1 = area.world_to_index(b.x_to,   b.z_to)
+                li0, li1 = sorted((li0, li1))
+                lj0, lj1 = sorted((lj0, lj1))
+                building_mask[li0:li1 + 1, lj0:lj1 + 1] = True
+            except ValueError:
+                pass
+
+        walkable  = ~water & ~building_mask
+        costs     = build_cost_grid(water, additional_blocked=building_mask)
+
+        road_bonus = np.zeros(heightmap.shape, dtype=np.float32)
+        for rx, rz in state._road_coords:
+            try:
+                li, lj = area.world_to_index(rx, rz)
+                road_bonus[li, lj] = -0.8
+            except ValueError:
+                pass
+        costs = np.maximum(0.1, costs + road_bonus)
+
+        all_connectors: list[RoadCell] = []
+        already_placed: set[tuple[int, int]] = set()
+
+        for building in state.buildings:
+            # Find the nearest road cell to the building center, then find the
+            # perimeter cell on the side closest to that road.  This ensures the
+            # connector path reaches whichever side of the building actually
+            # faces the road — regardless of the facing field.
+            bcx = int(building.center_x)
+            bcz = int(building.center_z)
+
+            nearest_rx, nearest_rz = min(
+                state._road_coords,
+                key=lambda r: abs(r[0] - bcx) + abs(r[1] - bcz),
+            )
+
+            # Build perimeter ring 1 block outside the building footprint.
+            perimeter: list[tuple[int, int]] = []
+            for px in range(building.x_from - 1, building.x_to + 2):
+                perimeter.append((px, building.z_from - 1))
+                perimeter.append((px, building.z_to + 1))
+            for pz in range(building.z_from, building.z_to + 1):
+                perimeter.append((building.x_from - 1, pz))
+                perimeter.append((building.x_to + 1, pz))
+
+            door_wx, door_wz = min(
+                perimeter,
+                key=lambda p: abs(p[0] - nearest_rx) + abs(p[1] - nearest_rz),
+            )
+
+            try:
+                door_li, door_lj = area.world_to_index(door_wx, door_wz)
+            except ValueError:
+                continue
+
+            door_li = int(np.clip(door_li, 0, walkable.shape[0] - 1))
+            door_lj = int(np.clip(door_lj, 0, walkable.shape[1] - 1))
+            walkable[door_li, door_lj] = True
+
+            try:
+                road_li, road_lj = area.world_to_index(nearest_rx, nearest_rz)
+            except ValueError:
+                continue
+
+            walkable[road_li, road_lj] = True
+
+            path = find_path(
+                walkable, heightmap,
+                start=(road_li, road_lj),
+                goal=(door_li, door_lj),
+                height_step_max=3,
+                height_cost=0.3,
+                costs=costs,
+            )
+
+            if path is None:
+                logger.debug(
+                    "  No connector path to building at (%d, %d).",
+                    building.x, building.z,
+                )
+                continue
+
+            # Convert A* local path to world coordinates.
+            centerline: set[tuple[int, int]] = set()
+            for li, lj in path:
+                wx, wz = area.index_to_world(li, lj)
+                if (wx, wz) not in state._road_coords:
+                    centerline.add((wx, wz))
+
+            # Expand to 2-wide with organic edges so it looks like a
+            # worn footpath rather than a single-pixel line.
+            bounds = (area.x_from, area.x_to, area.z_from, area.z_to)
+            expanded = expand_path_to_width(
+                centerline, 2, bounds,
+                blocked=set(),
+                organic=True,
+            )
+
+            for wx, wz in expanded:
+                if (wx, wz) not in already_placed and (wx, wz) not in state._road_coords:
+                    all_connectors.append(RoadCell(wx, wz, type="connector"))
+                    already_placed.add((wx, wz))
+
+        logger.info(
+            "_build_connectors: %d connector cells for %d buildings.",
+            len(all_connectors), len(state.buildings),
+        )
+        return all_connectors
 
     def _recompute_terrain_maps(self) -> None:
         """

@@ -119,7 +119,8 @@ class RoadPlanner:
 
         bounds   = (area.x_from, area.x_to, area.z_from, area.z_to)
         expanded = expand_path_to_width(
-            centerline, road_width, bounds, blocked=set()
+            centerline, road_width, bounds, blocked=set(),
+            organic=True,
         )
 
         final_roads = [

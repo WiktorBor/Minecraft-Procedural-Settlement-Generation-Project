@@ -288,25 +288,23 @@ def remove_sparse_top(
                 wx, wz    = area.index_to_world(cx, cz)
 
                 if cell_dist <= edge_buffer:
-                    # Natural buffer — leave untouched
                     continue
 
                 elif cell_dist <= edge_buffer + slope_width:
-                    # Slope zone — remove proportionally fewer layers
-                    # Cells closer to edge get shaved less; interior cells more.
-                    slope_t   = (cell_dist - edge_buffer) / slope_width  # 0→1
+                    slope_t   = (cell_dist - edge_buffer) / slope_width
                     target_y  = int(current_y - slope_t * (current_y - dominant_y))
                     target_y  = max(target_y, dominant_y)
                     positions = [(wx, wy, wz) for wy in range(target_y + 1, current_y + 1)]
                     if positions:
                         editor.placeBlock(positions, Block("minecraft:air"))
+                    editor.placeBlock((wx, target_y, wz), Block("minecraft:grass_block"))
                     submap[cx, cz] = target_y
 
                 else:
-                    # Interior — remove fully to dominant_y
                     positions = [(wx, wy, wz) for wy in range(dominant_y + 1, current_y + 1)]
                     if positions:
                         editor.placeBlock(positions, Block("minecraft:air"))
+                    editor.placeBlock((wx, dominant_y, wz), Block("minecraft:grass_block"))
                     submap[cx, cz] = dominant_y
 
     # ------------------------------------------------------------------
@@ -352,16 +350,15 @@ def remove_sparse_top(
                 if ratio <= max_aspect_ratio:
                     continue  # not narrow
 
-                # Narrow stripe — shave this layer (set to y-1, place air at y)
                 for cx, cz in cells:
                     cx, cz = int(cx), int(cz)
                     wx, wz = area.index_to_world(cx, cz)
                     editor.placeBlock((wx, y, wz), Block("minecraft:air"))
-                    current_submap[cx, cz]            = y - 1
-                    submap[cx, cz]                    = y - 1
-                    submap[cx, cz]     = y - 1
+                    editor.placeBlock((wx, y - 1, wz), Block("minecraft:grass_block"))
+                    current_submap[cx, cz] = y - 1
+                    submap[cx, cz]         = y - 1
 
-                any_changed = True  # re-run to check if still narrow after shave
+                any_changed = True
 
     # ------------------------------------------------------------------
     # Step 5: fill enclosed gaps below dominant level
@@ -432,41 +429,94 @@ def clear_lava_pools(
     analysis: WorldAnalysisResult,
 ) -> None:
     """
-    Clear surface lava pools and place a grass cap over them.
+    Clear surface lava pools and fill them flush with the surrounding terrain.
 
-    Uses the pre-cached ``analysis.surface_blocks`` array to identify lava
-    cells without any HTTP reads.  For each lava cell, air is placed from the
-    lava's surface Y up to Y+5 to ensure the column is fully cleared, then a
-    grass_block is placed on top.  The heightmap is updated in-place.
+    Two-pass detection ensures lava is found regardless of how the heightmaps
+    report it:
 
-    Args:
-        editor:   GDPC Editor instance (buffering=True recommended).
-        analysis: WorldAnalysisResult — heightmap_ground updated in-place.
+    Pass A — ``surface_blocks`` already contains ``"lava"`` for cells where
+             the fetcher's downward scan hit a lava block.
+    Pass B — any cell where ``water_mask`` is True (fluid detected) but
+             ``surface_blocks`` is NOT water is probed with ``getBlock()``
+             at ``heightmap_surface - 1`` to catch lava that the surface
+             scanner missed.
+
+    For each lava cell the column is filled with stone from 6 blocks below
+    the lava up to the surrounding terrain level, then capped with grass.
     """
     area       = analysis.best_area
     heightmap  = analysis.heightmap_ground
+    h_surface  = analysis.heightmap_surface
     water_mask = analysis.water_mask.astype(bool)
+    h, w       = heightmap.shape
 
+    # --- Pass A: detect from surface_blocks ---
     lava_mask = np.vectorize(
         lambda b: "lava" in str(b).lower()
-    )(analysis.surface_blocks).astype(bool) & ~water_mask
+    )(analysis.surface_blocks).astype(bool)
+
+    # --- Pass B: probe fluid cells that surface_blocks missed ---
+    # water_mask is True for any fluid (water OR lava).  Check actual block
+    # for cells that surface_blocks doesn't already mark as lava.
+    fluid_but_unknown = water_mask & ~lava_mask
+    probe_cells = np.argwhere(fluid_but_unknown)
+    probed = 0
+    for ix, iz in probe_cells:
+        ix, iz = int(ix), int(iz)
+        wx, wz = area.index_to_world(ix, iz)
+        probe_y = int(h_surface[ix, iz]) - 1
+        try:
+            block = editor.getBlock((wx, probe_y, wz))
+            if "lava" in block.id.lower():
+                lava_mask[ix, iz] = True
+                probed += 1
+        except Exception:
+            pass
 
     lava_cells = np.argwhere(lava_mask)
     if len(lava_cells) == 0:
         logger.info("clear_lava_pools: no surface lava found.")
         return
 
-    logger.info("clear_lava_pools: clearing %d lava cell(s).", len(lava_cells))
+    logger.info(
+        "clear_lava_pools: clearing %d lava cell(s) (%d from probe).",
+        len(lava_cells), probed,
+    )
 
-    for ix, iz in lava_cells:
-        ix, iz = int(ix), int(iz)
-        wx, wz = area.index_to_world(ix, iz)
-        cell_y = int(heightmap[ix, iz])
+    # Pre-compute fill heights: median of surrounding non-lava neighbours.
+    fill_heights = np.empty(len(lava_cells), dtype=np.int32)
+    for k, (ix, iz) in enumerate(lava_cells):
+        neighbour_ys: list[int] = []
+        for di in (-2, -1, 0, 1, 2):
+            for dj in (-2, -1, 0, 1, 2):
+                ni = int(np.clip(ix + di, 0, h - 1))
+                nj = int(np.clip(iz + dj, 0, w - 1))
+                if not lava_mask[ni, nj]:
+                    neighbour_ys.append(int(heightmap[ni, nj]))
+        if neighbour_ys:
+            fill_top = int(np.median(neighbour_ys))
+        else:
+            fill_top = int(heightmap[ix, iz])
+        fill_top = max(fill_top, int(heightmap[ix, iz]))
+        fill_heights[k] = fill_top
 
-        clear_positions = [(wx, wy, wz) for wy in range(cell_y, cell_y + 6)]
-        editor.placeBlock(clear_positions, Block("minecraft:air"))
-        editor.placeBlock((wx, cell_y, wz), Block("minecraft:grass_block"))
+    for k, (ix, iz) in enumerate(lava_cells):
+        ix, iz   = int(ix), int(iz)
+        wx, wz   = area.index_to_world(ix, iz)
+        cell_y   = int(heightmap[ix, iz])
+        fill_top = int(fill_heights[k])
 
-        heightmap[ix, iz] = cell_y
+        # Fill from 6 blocks below lava surface up to fill_top with stone
+        # so lava cannot re-flow.  Stone is cheaper than dirt for the server
+        # and won't be confused with surface soil.
+        fill_range = range(cell_y - 6, fill_top)
+        if fill_range:
+            editor.placeBlock(
+                [(wx, wy, wz) for wy in fill_range],
+                Block("minecraft:stone"),
+            )
+        editor.placeBlock((wx, fill_top, wz), Block("minecraft:grass_block"))
+
+        heightmap[ix, iz] = fill_top
 
 

@@ -25,10 +25,12 @@ class PlotPlanner:
         districts,
         taken: set[tuple[int, int]],
         config: SettlementConfig,
+        road_coords: set[tuple[int, int]] | None = None,
     ) -> None:
-        self.analysis  = analysis
-        self.districts = districts
-        self.config    = config
+        self.analysis    = analysis
+        self.districts   = districts
+        self.config      = config
+        self.road_coords = road_coords or set()
 
         # Pre-build a boolean grid of taken cells in local index space so that
         # overlap checks in _valid() are a single numpy slice rather than an
@@ -42,6 +44,37 @@ class PlotPlanner:
                 self._taken_mask[li, lj] = True
             except ValueError:
                 pass  # cell outside best_area — ignore
+
+    # ------------------------------------------------------------------
+    # Orientation helpers
+    # ------------------------------------------------------------------
+
+    def _facing_toward_road(self, wx: int, wz: int, width: int, depth: int) -> str:
+        """
+        Return the cardinal direction ("north"/"south"/"east"/"west") of the
+        plot edge that is closest to any road cell.
+
+        The nearest road cell is found first; then the direction from the plot
+        centre to that cell determines which edge is the "front".
+        If no road cells are known, defaults to "south".
+        """
+        if not self.road_coords:
+            return "south"
+
+        cx = wx + width  / 2.0
+        cz = wz + depth  / 2.0
+
+        rx, rz = min(
+            self.road_coords,
+            key=lambda r: (r[0] - cx) ** 2 + (r[1] - cz) ** 2,
+        )
+
+        dx = rx - cx
+        dz = rz - cz
+
+        if abs(dx) >= abs(dz):
+            return "east" if dx >= 0 else "west"
+        return "south" if dz >= 0 else "north"
 
     # ------------------------------------------------------------------
     # Validation
@@ -202,10 +235,13 @@ class PlotPlanner:
                     ].max()
                 )
 
+                facing = self._facing_toward_road(wx, wz, plot_w, plot_d)
+
                 plots.append(Plot(
                     x=wx, z=wz, y=plot_y,
                     width=plot_w, depth=plot_d,
                     type=dtype,
+                    facing=facing,
                 ))
 
         logger.info(
