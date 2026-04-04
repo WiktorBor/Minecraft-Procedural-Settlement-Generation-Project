@@ -15,6 +15,11 @@ from structures.tower.tower_builder import TowerBuilder
 
 logger = logging.getLogger(__name__)
 
+# How many blocks below the sampled ground Y to extend the foundation.
+# A deeper footing ensures the wall contacts the actual terrain even when the
+# heightmap value is a clamped edge-pixel for positions outside best_area.
+_FOUND_DEPTH: int = 6
+
 
 class FortificationBuilder:
     """
@@ -72,7 +77,6 @@ class FortificationBuilder:
         found_block  = self.palette["foundation"]
         light_block  = palette_get(self.palette, "light",     "minecraft:lantern")
         window_block = palette_get(self.palette, "window",    "minecraft:iron_bars")
-        slab_block   = palette_get(self.palette, "roof_slab", "minecraft:cobblestone_slab")
 
         corners = self._corner_positions(area, tw)
 
@@ -89,15 +93,6 @@ class FortificationBuilder:
                     b.x + b.width, b.z + b.depth,
                 ))
 
-        # Corner towers — clamp height lookup to best_area bounds
-        tower_builder = TowerBuilder(self.editor, self.palette, height=th, width=tw)
-        for cx, cz in corners:
-            li = max(0, min(heightmap.shape[0] - 1, cx - area.x_from))
-            lj = max(0, min(heightmap.shape[1] - 1, cz - area.z_from))
-            cy = int(heightmap[li, lj])
-            tower_builder.build_at(cx, cy, cz)
-
-        # Wall segments
         wall_sides = [
             ("north", False),
             ("south", True),
@@ -105,14 +100,64 @@ class FortificationBuilder:
             ("west",  False),
         ]
 
-        for side, has_gate in wall_sides:
-            sx, sz, ex, ez = self._wall_midline(area, side, tw)
+        # ------------------------------------------------------------------
+        # Pre-scan: collect every wall column's ground Y across ALL segments
+        # so we can pick one uniform wall-top Y for the entire fortification.
+        # ------------------------------------------------------------------
+        all_gy: list[int] = []
+        wall_midlines: list[tuple[int, int, int, int]] = []
+        for side, _ in wall_sides:
+            ml = self._wall_midline(area, side, tw)
+            wall_midlines.append(ml)
+            sx, sz, ex, ez = ml
+            dx_seg = ex - sx
+            dz_seg = ez - sz
+            steps  = max(abs(dx_seg), abs(dz_seg))
+            if steps == 0:
+                continue
+            for step in range(steps + 1):
+                t  = step / max(steps, 1)
+                wx = int(sx + round(t * dx_seg))
+                wz = int(sz + round(t * dz_seg))
+                if self._in_box(wx, wz, tower_boxes):
+                    continue
+                if self._in_box(wx, wz, building_boxes):
+                    continue
+                all_gy.append(self._sample_ground_y(wx, wz, area, heightmap))
+
+        # Also collect the four corner tower ground Ys.
+        for cx, cz in corners:
+            all_gy.append(self._sample_ground_y(cx, cz, area, heightmap))
+
+        # Pick the 2nd highest unique Y as the global reference so one
+        # extreme outlier peak doesn't force everything to a crazy height.
+        unique_gy = sorted(set(all_gy), reverse=True)
+        if len(unique_gy) >= 2:
+            uniform_base_y = unique_gy[1]
+        else:
+            uniform_base_y = unique_gy[0] if unique_gy else 0
+
+        wall_top_y = uniform_base_y + wh
+        logger.info("Fortification: uniform_base_y=%d  wall_top_y=%d  (from %d columns)",
+                     uniform_base_y, wall_top_y, len(all_gy))
+
+        # Corner towers — body runs from local ground up to uniform_base_y so
+        # all towers reach the same wall-top level regardless of terrain height.
+        for cx, cz in corners:
+            corner_ground_y = self._sample_ground_y(cx, cz, area, heightmap)
+            body_h = max(th, uniform_base_y - corner_ground_y)
+            TowerBuilder(
+                self.editor, self.palette, height=body_h, width=tw,
+            ).build_at(cx, corner_ground_y, cz)
+
+        # Wall segments — all share the same wall_top_y
+        for (side, has_gate), (sx, sz, ex, ez) in zip(wall_sides, wall_midlines):
             self._build_wall_segment(
                 sx, sz, ex, ez,
                 area, heightmap,
-                wh, wt, gw,
+                wall_top_y, wt, gw,
                 wall_block, accent_block, found_block,
-                light_block, window_block, slab_block,
+                light_block, window_block,
                 tower_boxes=tower_boxes,
                 building_boxes=building_boxes,
                 has_gate=has_gate,
@@ -163,6 +208,45 @@ class FortificationBuilder:
             return wx, area.z_from, wx, area.z_to
 
     @staticmethod
+    def _sample_ground_y(
+        wx: int,
+        wz: int,
+        area: BuildArea,
+        heightmap,
+    ) -> int:
+        """
+        Return the best estimate of ground Y at world position (wx, wz).
+
+        For positions inside best_area the heightmap value is accurate.
+        For positions outside (wall/tower positions beyond the area boundary)
+        the raw index would be clamped to an edge pixel, which can be several
+        blocks *above* the actual terrain.  To avoid floating walls we take
+        the minimum of a small neighbourhood of edge pixels, which errs on
+        the side of lower rather than higher.
+        """
+        li_raw = wx - area.x_from
+        lj_raw = wz - area.z_from
+        h, d   = heightmap.shape
+
+        inside = (0 <= li_raw < h) and (0 <= lj_raw < d)
+        if inside:
+            return int(heightmap[li_raw, lj_raw])
+
+        # Outside: scan a 3×3 neighbourhood of the nearest edge pixel
+        # and take the minimum so the wall never floats.
+        li0 = max(0, min(h - 1, li_raw))
+        lj0 = max(0, min(d - 1, lj_raw))
+        min_y = int(heightmap[li0, lj0])
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                ni = max(0, min(h - 1, li0 + di))
+                nj = max(0, min(d - 1, lj0 + dj))
+                v  = int(heightmap[ni, nj])
+                if v < min_y:
+                    min_y = v
+        return min_y
+
+    @staticmethod
     def _in_box(
         wx: int,
         wz: int,
@@ -186,7 +270,7 @@ class FortificationBuilder:
         bx: int, bz: int,
         area: BuildArea,
         heightmap,
-        wall_h: int,
+        wall_top_y: int,
         wall_t: int,
         gate_w: int,
         wall_block: str,
@@ -194,7 +278,6 @@ class FortificationBuilder:
         found_block: str,
         light_block: str,
         window_block: str,
-        slab_block: str,
         tower_boxes: list,
         building_boxes: list,
         has_gate: bool = False,
@@ -220,23 +303,20 @@ class FortificationBuilder:
             if self._in_box(wx, wz, building_boxes):
                 continue
 
-            li = max(0, min(heightmap.shape[0] - 1, wx - area.x_from))
-            lj = max(0, min(heightmap.shape[1] - 1, wz - area.z_from))
-            gy = int(heightmap[li, lj])
-
+            gy      = self._sample_ground_y(wx, wz, area, heightmap)
             is_gate = has_gate and abs(step - gate_mid) <= gate_half
 
             if is_gate:
                 self._build_gate_column(
-                    wx, wz, gy, wall_h, wall_t, along_x,
+                    wx, wz, gy, wall_top_y, wall_t, along_x,
                     wall_block, accent_block, found_block,
-                    window_block, slab_block, light_block,
+                    window_block, light_block,
                     is_centre=(step == gate_mid),
                     light_props=light_props,
                 )
             else:
                 self._build_wall_column(
-                    wx, wz, gy, wall_h, wall_t, along_x, step,
+                    wx, wz, gy, wall_top_y, wall_t, along_x, step,
                     wall_block, accent_block, found_block,
                     light_block, light_props,
                 )
@@ -248,7 +328,7 @@ class FortificationBuilder:
     def _build_wall_column(
         self,
         wx: int, wz: int, gy: int,
-        wall_h: int, wall_t: int,
+        wall_top_y: int, wall_t: int,
         along_x: bool, step: int,
         wall_block: str, accent_block: str, found_block: str,
         light_block: str, light_props: dict,
@@ -256,44 +336,41 @@ class FortificationBuilder:
         for t in range(wall_t):
             ox = 0 if along_x else t
             oz = t if along_x else 0
-            self.editor.placeBlock((wx + ox, gy - 1, wz + oz), Block(found_block))
+            x, z = wx + ox, wz + oz
+            for y in range(gy - _FOUND_DEPTH, gy):
+                self.editor.placeBlock((x, y, z), Block(found_block))
+            for y in range(gy, wall_top_y):
+                self.editor.placeBlock((x, y, z), Block(wall_block))
 
-        for dy in range(wall_h):
-            y = gy + dy
-            for t in range(wall_t):
-                ox = 0 if along_x else t
-                oz = t if along_x else 0
-                self.editor.placeBlock((wx + ox, y, wz + oz), Block(wall_block))
-
-        top_y     = gy + wall_h
         is_merlon = (step % 3 != 2)
         if is_merlon:
-            self.editor.placeBlock((wx, top_y, wz), Block(accent_block))
+            self.editor.placeBlock((wx, wall_top_y, wz), Block(accent_block))
 
         inner_t  = wall_t - 1
         ox_inner = 0 if along_x else inner_t
         oz_inner = inner_t if along_x else 0
         self.editor.placeBlock(
-            (wx + ox_inner, top_y, wz + oz_inner),
+            (wx + ox_inner, wall_top_y, wz + oz_inner),
             Block(accent_block if is_merlon else wall_block),
         )
 
-        if step % 8 in (0, 1):
+        wall_h_local = wall_top_y - gy
+        if step % 8 in (0, 1) and wall_h_local > 1:
             butt_ox = (-1 if along_x else 0)
             butt_oz = (0 if along_x else -1)
-            for dy in range(wall_h - 1):
+            for dy in range(wall_h_local - 1):
                 self.editor.placeBlock(
                     (wx + butt_ox, gy + dy, wz + butt_oz),
                     Block(wall_block),
                 )
             self.editor.placeBlock(
-                (wx + butt_ox, gy + wall_h - 1, wz + butt_oz),
+                (wx + butt_ox, wall_top_y - 1, wz + butt_oz),
                 Block(accent_block),
             )
 
         if step % 12 == 0 and is_merlon:
             self.editor.placeBlock(
-                (wx, top_y + 1, wz), Block(light_block, light_props)
+                (wx, wall_top_y + 1, wz), Block(light_block, light_props)
             )
 
     # ------------------------------------------------------------------
@@ -303,39 +380,34 @@ class FortificationBuilder:
     def _build_gate_column(
         self,
         wx: int, wz: int, gy: int,
-        wall_h: int, wall_t: int,
+        wall_top_y: int, wall_t: int,
         along_x: bool,
         wall_block: str, accent_block: str, found_block: str,
-        window_block: str, slab_block: str, light_block: str,
+        window_block: str, light_block: str,
         is_centre: bool, light_props: dict,
     ) -> None:
-        gate_h = 3
+        gate_h     = 3
+        wall_h_local = wall_top_y - gy
 
         for t in range(wall_t):
-            ox = 0 if along_x else t
-            oz = t if along_x else 0
-            self.editor.placeBlock((wx + ox, gy - 1, wz + oz), Block(found_block))
-
-        for dy in range(wall_h):
-            y = gy + dy
-            for t in range(wall_t):
-                ox  = 0 if along_x else t
-                oz  = t if along_x else 0
-                wx_ = wx + ox
-                wz_ = wz + oz
-
+            ox  = 0 if along_x else t
+            oz  = t if along_x else 0
+            x, z = wx + ox, wz + oz
+            for y in range(gy - _FOUND_DEPTH, gy):
+                self.editor.placeBlock((x, y, z), Block(found_block))
+            for dy in range(max(0, wall_h_local)):
+                y = gy + dy
                 if dy < gate_h:
                     if t == 0:
-                        self.editor.placeBlock((wx_, y, wz_), Block(window_block))
+                        self.editor.placeBlock((x, y, z), Block(window_block))
                     else:
-                        self.editor.placeBlock((wx_, y, wz_), Block("minecraft:air"))
+                        self.editor.placeBlock((x, y, z), Block("minecraft:air"))
                 elif dy == gate_h:
-                    self.editor.placeBlock((wx_, y, wz_), Block(accent_block))
+                    self.editor.placeBlock((x, y, z), Block(accent_block))
                 else:
-                    self.editor.placeBlock((wx_, y, wz_), Block(wall_block))
+                    self.editor.placeBlock((x, y, z), Block(wall_block))
 
-        top_y = gy + wall_h
-        self.editor.placeBlock((wx, top_y, wz), Block(accent_block))
+        self.editor.placeBlock((wx, wall_top_y, wz), Block(accent_block))
 
         if is_centre:
             hang_props = {"hanging": "true"} if "lantern" in light_block else light_props

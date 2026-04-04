@@ -38,7 +38,15 @@ class DecorationBuilder:
         y     = plot.y
         wall  = self.palette["wall"]
         acc   = self.palette["accent"]
+        found = self.palette["foundation"]
         light = palette_get(self.palette, "light", "minecraft:lantern")
+
+        # Foundation — 4 blocks deep under the 3×3 footprint
+        geo.placeCuboid(
+            self.editor,
+            (x, y - 4, z), (x + 2, y - 1, z + 2),
+            Block(found),
+        )
 
         geo.placeCuboidWireframe(
             self.editor, (x, y, z), (x + 2, y, z + 2), Block(wall)
@@ -80,6 +88,13 @@ class DecorationBuilder:
         stone = self.palette["foundation"]
         wall  = self.palette["wall"]
         light = palette_get(self.palette, "light", "minecraft:lantern")
+
+        # Foundation — 4 blocks deep under the 5×5 footprint
+        geo.placeCuboid(
+            self.editor,
+            (x, y - 4, z), (x + 4, y - 1, z + 4),
+            Block(stone),
+        )
 
         geo.placeCuboidWireframe(
             self.editor, (x, y, z), (x + 4, y, z + 4), Block(stone)

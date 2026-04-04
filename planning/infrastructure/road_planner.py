@@ -10,7 +10,7 @@ from data.settlement_entities import Districts, RoadCell
 from utils.astar import find_path
 from utils.mst import mst_edges
 from utils.path_utils import expand_path_to_width
-from utils.walkable_grid import build_cost_grid
+from utils.walkable_grid import build_cost_grid, nearest_walkable
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +98,11 @@ class RoadPlanner:
                 )
                 continue
 
+            # Snap start/goal to nearest non-water cell so A* isn't trapped
+            # when a district centre sits on a water tile.
+            start = nearest_walkable(*start, passable_mask, max_radius=15) or start
+            goal  = nearest_walkable(*goal,  passable_mask, max_radius=15) or goal
+
             path = find_path(
                 passable_mask, heightmap, start, goal,
                 height_step_max=3,
@@ -125,7 +130,7 @@ class RoadPlanner:
 
         bounds   = (area.x_from, area.x_to, area.z_from, area.z_to)
         expanded = expand_path_to_width(
-            centerline, road_width, bounds, blocked=set()
+            centerline, road_width, bounds, blocked=set(), organic=True
         )
 
         final_roads = [

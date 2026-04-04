@@ -138,8 +138,13 @@ class WorldFetcher:
                 dx = min(chunk_size, h_w - x)
                 dz = min(chunk_size, h_d - z)
 
-                y_max = int(np.max(heightmap_ground[x:x + dx, z:z + dz]))
-                y_min = max(0, y_max - config.surface_scan_depth)
+                chunk_hmap = heightmap_ground[x:x + dx, z:z + dz]
+                y_max = int(np.max(chunk_hmap))
+                # Scan from the lowest cell height so every block — including
+                # lava pools that sit far below a hilltop in the same chunk —
+                # is covered.  Without this, cells more than surface_scan_depth
+                # below the chunk peak silently return "minecraft:air".
+                y_min = max(0, int(np.min(chunk_hmap)) - 1)
                 actual_depth = y_max - y_min
 
                 if actual_depth <= 0:

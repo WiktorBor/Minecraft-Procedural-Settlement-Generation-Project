@@ -23,6 +23,7 @@ from __future__ import annotations
 from gdpc import Block
 from gdpc.editor import Editor
 
+from data.analysis_results import WorldAnalysisResult
 from data.biome_palettes import BiomePalette, palette_get
 from data.settlement_entities import Plot
 from structures.base.build_context import BuildContext
@@ -59,6 +60,7 @@ class SpireTower:
         plot: Plot,
         palette: BiomePalette,
         rotation: int = 0,
+        analysis: WorldAnalysisResult | None = None,
     ) -> None:
         x, y, z = plot.x, plot.y, plot.z
         w, d    = plot.width, plot.depth
@@ -97,6 +99,11 @@ class SpireTower:
         ctx_stone = BuildContext(editor, stone_pal, rotation=rotation,
                                  origin=(x, y, z),  size=(w, d))
 
+        # Compute how deep each section's foundation must go to always reach
+        # the actual terrain under every column of the footprint.
+        tower_depth = self._foundation_depth(x, y, z, tw, td, analysis)
+        house_depth = self._foundation_depth(hx, y, z, hw, d,  analysis)
+
         # ----------------------------------------------------------------
         # Height milestones
         # ----------------------------------------------------------------
@@ -112,7 +119,7 @@ class SpireTower:
         # HOUSE WING
         # ================================================================
         with ctx.push():
-            build_foundation(ctx, hx, y,     z, hw, d)
+            build_foundation(ctx, hx, y,     z, hw, d, depth_below=house_depth)
             build_floor(ctx,      hx, y,     z, hw, d)
             build_walls(ctx,      hx, y,     z, hw, 5, d)
             add_door(ctx,         hx, y,     z, hw, facing="south")
@@ -131,7 +138,7 @@ class SpireTower:
         # TOWER — stone base
         # ================================================================
         with ctx_stone.push():
-            build_foundation(ctx_stone, x, y,        z, tw, td)
+            build_foundation(ctx_stone, x, y,        z, tw, td, depth_below=tower_depth)
             build_floor(ctx_stone,      x, y,        z, tw, td)
             build_walls(ctx_stone,      x, y,        z, tw, stone_h, td)
             add_door(ctx_stone,         x, y,        z, tw, facing="south")
@@ -170,6 +177,41 @@ class SpireTower:
                     (x + tw - 1, y + 2, pass_z),
                     Block(door_id, {"facing": "east", "half": "upper", "hinge": "left"}),
                 )
+
+
+    @staticmethod
+    def _foundation_depth(
+        x: int, y: int, z: int,
+        w: int, d: int,
+        analysis: WorldAnalysisResult | None,
+        fallback: int = 15,
+    ) -> int:
+        """
+        Return how many blocks below ``y`` the foundation must extend to
+        reach the lowest terrain point under every column of the footprint.
+
+        If ``analysis`` is available the heightmap is sampled at every (x, z)
+        column; otherwise ``fallback`` is returned.
+        """
+        if analysis is None:
+            return fallback
+
+        area   = analysis.best_area
+        hmap   = analysis.heightmap_ground
+        min_gy = y   # start at plot level; only go deeper as needed
+
+        for dx in range(w):
+            for dz in range(d):
+                try:
+                    li, lj = area.world_to_index(x + dx, z + dz)
+                except ValueError:
+                    continue
+                gy = int(hmap[li, lj])
+                if gy < min_gy:
+                    min_gy = gy
+
+        # depth = how far below y the lowest ground column sits, plus 1 for solid contact
+        return max(1, y - min_gy + 1)
 
 
 # ---------------------------------------------------------------------------

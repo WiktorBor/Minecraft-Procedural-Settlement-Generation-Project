@@ -54,7 +54,7 @@ class Ctx:
     has_chimney: bool
     has_porch:   bool
 
-    # Door orientation: 0 → z_min face (south-facing door), 1 → z_max face
+    # Door orientation: 0 → z_min face (north-facing door), 1 → z_max face (south-facing door)
     door_face: int
 
     # Materials
@@ -62,6 +62,11 @@ class Ctx:
 
     # Editor — required; supplied by HouseGrammar._place() at build time.
     editor: Editor
+
+    # Clockwise rotation in degrees — 0, 90, 180, 270.
+    # Applied via editor.pushTransform in HouseGrammar._place().
+    # Must be last so the default doesn't break Python 3.9 dataclass field ordering.
+    rotation: int = 0
 
     # ------------------------------------------------------------------
     # Derived Y levels
@@ -110,7 +115,11 @@ class Ctx:
 
     @property
     def door_facing(self) -> str:
-        """Minecraft 'facing' value for the door block."""
+        """
+        Minecraft 'facing' value for the door block in local (pre-rotation) space.
+        Always north or south — GDPC's pushTransform rotates the block state
+        to the correct world direction when rotation != 0.
+        """
         return "north" if self.door_face == 0 else "south"
 
     @property

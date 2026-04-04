@@ -50,8 +50,17 @@ class FarmBuilder:
         d = max(5, d - random.choice([0, 2]))
 
         basin_block          = palette_get(self.palette, "accent", "minecraft:oak_log")
+        found_block          = palette_get(self.palette, "foundation", "minecraft:cobblestone")
         crops_left, crops_right = random.choice(_CROP_PAIRS)
         channel_x            = x + w // 2
+
+        # Foundation — solid fill 6 blocks below the footprint so the farm
+        # is anchored to the terrain even on a hillside
+        geo.placeCuboid(
+            self.editor,
+            (x, y - 6, z), (x + w - 1, y - 2, z + d - 1),
+            Block(found_block),
+        )
 
         # Base frame (y-1)
         geo.placeCuboid(

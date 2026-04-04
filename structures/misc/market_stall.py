@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import random
 
+import gdpc.geometry as geo
 from gdpc import Block
 from gdpc.editor import Editor
 
-from data.biome_palettes import BiomePalette
+from data.biome_palettes import BiomePalette, palette_get
 from data.settlement_entities import Plot
 
 
@@ -32,15 +33,23 @@ class MarketStall:
         palette: BiomePalette,
         rotation: int = 0,
     ) -> None:
-        x, y, z = plot.x, plot.y, plot.z
+        x, y, z = plot.x, plot.y - 1, plot.z
         w, d    = plot.width, plot.depth
 
         color = random.choice(self.CANOPY_COLORS)
         wool  = f"minecraft:{color}_wool"
         fence = "minecraft:spruce_fence"
+        found = palette_get(palette, "foundation", "minecraft:cobblestone")
 
         px = max(1, w // 2)
         pz = max(1, d // 2)
+
+        # Foundation — solid block fill 4 blocks below the stall footprint
+        geo.placeCuboid(
+            editor,
+            (x - px, y - 4, z - pz), (x + px, y - 1, z + pz),
+            Block(found),
+        )
 
         # Fence posts (front two corners only — back is against a wall typically)
         for iy in range(y + 1, y + 4):

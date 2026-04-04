@@ -159,6 +159,7 @@ def main() -> int:
             settlement_config=settlement_config,
             terrain_config=terrain_config,
             palette=palette,
+            terrain_loader=terrain_loader,
         )
 
         state = generator.generate(num_buildings=num_buildings)

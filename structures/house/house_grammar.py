@@ -29,6 +29,8 @@ import random
 from pathlib import Path
 
 from gdpc.editor import Editor
+from gdpc.transform import rotatedBoxTransform
+from gdpc.vector_tools import Box
 
 from data.biome_palettes import BiomePalette, palette_get
 from data.settlement_entities import Plot
@@ -36,7 +38,7 @@ from structures.house.house_body_builder import BodyBuilder
 from structures.house.house_context import Ctx
 from structures.house.house_detail_builder import DetailBuilder
 from structures.house.house_ngram_scorer import BlockSequenceRecorder, HouseNgramScorer
-from structures.house.house_scorer import HouseParams, HouseScorer
+from structures.house.house_scorer import HouseScorer
 from structures.roofs.roof_builder import build_roof
 
 logger = logging.getLogger(__name__)
@@ -139,24 +141,58 @@ class HouseGrammar:
         from dataclasses import replace
         active_ctx = replace(ctx, editor=editor_override if editor_override is not None else self.editor)
 
-        self.body.build_foundation(active_ctx)
-        self.body.build_body(active_ctx)
-        self.body.build_facade(active_ctx)
-        self.body.build_ceiling(active_ctx)
-        if active_ctx.has_upper:
-            self.body.build_upper(active_ctx)
+        def _do_place():
+            self.body.build_foundation(active_ctx)
+            self.body.build_body(active_ctx)
+            self.body.build_facade(active_ctx)
+            self.body.build_ceiling(active_ctx)
+            if active_ctx.has_upper:
+                self.body.build_upper(active_ctx)
 
-        build_roof(
-            _CtxRoofAdapter(active_ctx),
-            active_ctx.x, active_ctx.roof_base_y, active_ctx.z,
-            active_ctx.w, active_ctx.d,
-            active_ctx.roof_type,
+            build_roof(
+                _CtxRoofAdapter(active_ctx),
+                active_ctx.x, active_ctx.roof_base_y, active_ctx.z,
+                active_ctx.w, active_ctx.d,
+                active_ctx.roof_type,
+            )
+
+            if active_ctx.has_chimney:
+                self.detail.build_chimney(active_ctx)
+            self.detail.build_interior(active_ctx)
+            self.detail.build_details(active_ctx)
+
+        if active_ctx.rotation == 0:
+            _do_place()
+        else:
+            steps     = (active_ctx.rotation // 90) % 4
+            box       = Box(
+                offset=(active_ctx.x, active_ctx.y, active_ctx.z),
+                size=(active_ctx.w, 1, active_ctx.d),
+            )
+            transform = rotatedBoxTransform(box, steps)
+            with active_ctx.editor.pushTransform(transform):
+                _do_place()
+
+    # ------------------------------------------------------------------
+    # Scorer bridge
+    # ------------------------------------------------------------------
+
+    def _ctx_to_params(self, ctx: Ctx):
+        """Convert a Ctx to HouseParams for the RF scorer."""
+        from structures.house.house_scorer import HouseParams
+        return HouseParams(
+            w=ctx.w,
+            d=ctx.d,
+            wall_h=ctx.wall_h,
+            has_upper=ctx.has_upper,
+            upper_h=ctx.upper_h,
+            has_chimney=ctx.has_chimney,
+            has_porch=ctx.has_porch,
+            has_extension=False,
+            roof_type=ctx.roof_type,
+            foundation_h=1,
+            ext_w=0,
         )
-
-        if active_ctx.has_chimney:
-            self.detail.build_chimney(active_ctx)
-        self.detail.build_interior(active_ctx)
-        self.detail.build_details(active_ctx)
 
     # ------------------------------------------------------------------
     # Context construction
@@ -177,6 +213,9 @@ class HouseGrammar:
                        eval script can generate sequences that genuinely differ
                        from good ones for n-gram training.
         """
+        # For east/west plots the footprint is rotated 90° — swap w/d so the
+        # local build dimensions match the plot's narrower axis before the
+        # transform flips them back into the correct world orientation.
         if rotation in (90, 270):
             w, d = d, w
 
@@ -185,6 +224,12 @@ class HouseGrammar:
         if w % 2 == 0: w -= 1
         if d % 2 == 0: d -= 1
 
+        # Door is always on the local z_max face (door_face=1 = "south" in
+        # local space).  GDPC's pushTransform rotates it to the correct world
+        # direction.  Exception: for rotation=180 (north-facing plot) the
+        # z_max face rotates to face north correctly, so door_face=1 still works.
+        door_face = 1
+
         if force_bad:
             wall_h      = random.choice([3, 5])
             has_upper   = False
@@ -192,7 +237,6 @@ class HouseGrammar:
             roof_type   = "cross" if (w < 9 or d < 9) else "gabled"
             has_chimney = False
             has_porch   = False
-            door_face   = random.randint(0, 1)
         else:
             wall_h    = random.choice([3, 3, 4])
             has_upper = (w >= 7 and d >= 7 and random.random() < 0.65)
@@ -201,10 +245,6 @@ class HouseGrammar:
             span = min(w, d)
             long = max(w, d)
 
-            # Cross-gabled: relaxed from (both >= 9) to (span >= 7 AND long >= 9)
-            # so 7×9, 7×11, 9×11 plots can get a cross roof too.
-            # Probability raised from 0.25 → 0.55 so it competes fairly with
-            # gabled in the scorer retry loop.
             if span >= 7 and long >= 9 and random.random() < 0.55:
                 roof_type = "cross"
             elif span <= 7 and random.random() < 0.30:
@@ -215,11 +255,11 @@ class HouseGrammar:
             smoke_block = palette_get(self.palette, "smoke", "minecraft:campfire")
             has_chimney = ("campfire" in smoke_block) and (random.random() < 0.80)
             has_porch   = random.random() < 0.45
-            door_face   = 0 if random.random() < 0.75 else 1
 
         return Ctx(
             x=x, y=y, z=z,
             w=w, d=d,
+            rotation=rotation,
             wall_h=wall_h,
             has_upper=has_upper,
             upper_h=upper_h,
@@ -240,6 +280,9 @@ class _NullEditor:
     """Discards all placeBlock calls — used during ngram sequence probing."""
     def placeBlock(self, position, block) -> None:
         pass
+    def pushTransform(self, transform):
+        from contextlib import nullcontext
+        return nullcontext()
     def __getattr__(self, name):
         return lambda *a, **kw: None
 
