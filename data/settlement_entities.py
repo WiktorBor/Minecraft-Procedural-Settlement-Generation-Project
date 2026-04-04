@@ -62,9 +62,27 @@ class Plot(RectangularArea):
     (x, z) is the minimum-X, minimum-Z corner.
     y is the ground level used for vertical placement.
     type matches the district type that owns this plot.
+    facing is the cardinal direction ("north"/"south"/"east"/"west") of the
+    plot's front edge — the edge that points toward the nearest road cell.
     """
-    y:    int = 0
-    type: str = ""
+    y:      int = 0
+    type:   str = ""
+    facing: str = "south"
+
+    def front_door(self) -> tuple[int, int]:
+        """
+        World (x, z) of the cell one block outside the centre of the front edge.
+        This is where the connector path should end.
+        """
+        cx = int(self.center_x)
+        cz = int(self.center_z)
+        if self.facing == "north":
+            return cx, self.z_from - 1
+        if self.facing == "south":
+            return cx, self.z_to + 1
+        if self.facing == "west":
+            return self.x_from - 1, cz
+        return self.x_to + 1, cz  # east
 
 
 @dataclass
@@ -75,8 +93,21 @@ class Building(RectangularArea):
     Shares the spatial interface with Plot so geometry helpers work
     on either without special-casing.
     """
-    y:    int = 0
-    type: str = ""
+    y:      int = 0
+    type:   str = ""
+    facing: str = "south"
+
+    def front_door(self) -> tuple[int, int]:
+        """World (x, z) one block outside the centre of the front edge."""
+        cx = int(self.center_x)
+        cz = int(self.center_z)
+        if self.facing == "north":
+            return cx, self.z_from - 1
+        if self.facing == "south":
+            return cx, self.z_to + 1
+        if self.facing == "west":
+            return self.x_from - 1, cz
+        return self.x_to + 1, cz  # east
 
 
 @dataclass(frozen=True)

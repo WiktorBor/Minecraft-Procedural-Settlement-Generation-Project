@@ -44,15 +44,28 @@ class _QuickAgent(StructureAgent):
     """Lightweight terrain check without a full StructureAgent subclass."""
     def decide(self, plot: Plot) -> dict:
         patch = self.extract_patch(plot)
-        return {"build": self.is_flat(patch, tolerance=4)}   # FIX 5: loosened from 3→4
+        return {"build": self.is_flat(patch, tolerance=4)}
 
 
 # ---------------------------------------------------------------------------
-# FIX 3: Registry — single source of truth for all builder callables.
+# Registry — single source of truth for all builder callables.
 # Each entry: key → (builder_fn, min_width, min_depth)
 # ---------------------------------------------------------------------------
 
-def _build_registry() -> dict[str, tuple[Callable, int, int]]:
+_FACING_TO_ROTATION: dict[str, int] = {
+    "south": 0,
+    "west":  90,
+    "north": 180,
+    "east":  270,
+}
+
+
+def _rotation(plot) -> int:
+    """Convert plot.facing to a clockwise rotation in degrees."""
+    return _FACING_TO_ROTATION.get((plot.facing or "south").lower(), 0)
+
+
+def _build_registry(analysis: WorldAnalysisResult | None = None) -> dict[str, tuple[Callable, int, int]]:
 
     def cottage(ed, pl, pal):
         from structures.house.house_grammar import HouseGrammar
@@ -60,31 +73,35 @@ def _build_registry() -> dict[str, tuple[Callable, int, int]]:
             ed, pal,
             scorer=_HOUSE_SCORER,
             ngram_scorer=_HOUSE_NGRAM_SCORER,
-        ).build(pl)
+        ).build(pl, rotation=_rotation(pl))
 
     def blacksmith(ed, pl, pal):
         from structures.misc.blacksmith import Blacksmith
-        Blacksmith().build(ed, pl, pal)
+        Blacksmith().build(ed, pl, pal, rotation=_rotation(pl))
+
+    def dock(ed, pl, pal):
+        from structures.misc.dock import Dock
+        Dock().build(ed, pl, pal, rotation=_rotation(pl))
 
     def market_stall(ed, pl, pal):
         from structures.misc.market_stall import MarketStall
-        MarketStall().build(ed, pl, pal)
+        MarketStall().build(ed, pl, pal, rotation=_rotation(pl))
 
     def clock_tower(ed, pl, pal):
         from structures.misc.clock_tower import ClockTower
-        ClockTower().build(ed, pl, pal)
+        ClockTower().build(ed, pl, pal, rotation=_rotation(pl))
 
     def tavern(ed, pl, pal):
         from structures.misc.tavern import Tavern
-        Tavern().build(ed, pl, pal)
+        Tavern().build(ed, pl, pal, rotation=_rotation(pl))
 
     def tower(ed, pl, pal):
         from structures.tower.tower import Tower
-        Tower().build(ed, pl, pal)
+        Tower().build(ed, pl, pal, rotation=_rotation(pl))
 
     def spire_tower(ed, pl, pal):
         from structures.misc.spire_tower import SpireTower
-        SpireTower().build(ed, pl, pal)
+        SpireTower().build(ed, pl, pal, rotation=_rotation(pl), analysis=analysis)
 
     def fortification(ed, pl, pal):
         from structures.misc.fortification import Fortification
@@ -96,7 +113,7 @@ def _build_registry() -> dict[str, tuple[Callable, int, int]]:
 
     def farm(ed, pl, pal):
         from structures.farm.farm import Farm
-        Farm().build(ed, pl, pal)
+        Farm().build(ed, pl, pal, rotation=_rotation(pl))
 
     def decoration(ed, pl, pal):
         from structures.decoration.plot.decoration import Decoration
@@ -108,6 +125,8 @@ def _build_registry() -> dict[str, tuple[Callable, int, int]]:
     #   - spire_tower  → placed once at best_area centroid (settlement_generator)
     #   - tower_house  → plot building inside settlement (included below)
     #   - fortification → FortificationBuilder perimeter only
+    #   - dock         → placed once per fishing district (settlement_generator)
+    #                    also available as a regular plot building in fishing districts
     return {
         "cottage":      (cottage,      6,  6),
         "tower_house":  (spire_tower, 10,  6),   # plot building — not fortification
@@ -117,6 +136,7 @@ def _build_registry() -> dict[str, tuple[Callable, int, int]]:
         "clock_tower":  (clock_tower,  8,  8),
         "tavern":       (tavern,      12,  8),
         "farm":         (farm,         5,  5),
+        "dock":         (dock,        14, 10),
         "decoration":   (decoration,   4,  4),
     }
 
@@ -125,18 +145,15 @@ def _build_registry() -> dict[str, tuple[Callable, int, int]]:
 # District pools
 # ---------------------------------------------------------------------------
 
-# FIX 1a: forest gets variety — towers, cottages, decorations
-# FIX 1b: farming gets variety — farms + market stalls + decorations
-# FIX 4:  fishing adds clock_tower and decoration alongside cottage/stall
-
 DISTRICT_POOLS: dict[str, dict[str, float]] = {
     "residential": {
-        "cottage":       0.35,
-        "tower_house":   0.10,
-        "blacksmith":    0.18,
-        "market_stall":  0.17,
-        "clock_tower":   0.10,
-        "tavern":        0.10,
+        "cottage":       0.30,
+        "tower_house":   0.08,
+        "blacksmith":    0.16,
+        "market_stall":  0.15,
+        "clock_tower":   0.09,
+        "tavern":        0.09,
+        "farm":          0.13,
     },
     "farming": {
         "farm":          0.60,
@@ -144,10 +161,11 @@ DISTRICT_POOLS: dict[str, dict[str, float]] = {
         "decoration":    0.15,
     },
     "fishing": {
-        "cottage":       0.45,
-        "market_stall":  0.30,
-        "clock_tower":   0.15,
-        "decoration":    0.10,
+        "dock":          0.40,
+        "cottage":       0.25,
+        "market_stall":  0.20,
+        "clock_tower":   0.10,
+        "decoration":    0.05,
     },
     "forest": {
         "decoration":    0.40,
@@ -186,17 +204,13 @@ class StructureSelector:
         config: SettlementConfig,
         palette: BiomePalette,
         has_water: bool = False,
-        fountain_district_ids: set[int] | None = None,
     ) -> None:
-        self.editor               = editor
-        self.analysis             = analysis
-        self.config               = config
-        self.palette              = palette
-        self.has_water            = has_water
-        # Districts that already have a fountain at their centre — decoration
-        # is suppressed for these so the fountain area stays clear.
-        self.fountain_district_ids: set[int] = fountain_district_ids or set()
-        self._registry = _build_registry()
+        self.editor    = editor
+        self.analysis  = analysis
+        self.config    = config
+        self.palette   = palette
+        self.has_water = has_water
+        self._registry = _build_registry(analysis=analysis)
         self._agent    = _QuickAgent(analysis)
 
     # ------------------------------------------------------------------
@@ -218,11 +232,6 @@ class StructureSelector:
             return None
 
         pool = dict(DISTRICT_POOLS.get(dtype, FALLBACK_POOL) or FALLBACK_POOL)
-
-        # Suppress decoration for districts that already have a fountain —
-        # the centroid area is taken and decoration would crowd it.
-        if hasattr(plot, "district_id") and plot.district_id in self.fountain_district_ids:
-            pool.pop("decoration", None)
 
         eligible = {
             key: weight

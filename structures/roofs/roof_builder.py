@@ -161,7 +161,7 @@ def _build_pyramid(
     ridge_y = base_y + max_layers
     for px in range(x0 + max_layers, x1 - max_layers + 1):
         for pz in range(z0 + max_layers, z1 - max_layers + 1):
-            ctx.place_block((px, ridge_y, pz), Block(mat_slab, {"type": "bottom"}))
+            ctx.place_block((px, ridge_y, pz), Block(mat_slab, {"type": "top"}))
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +208,7 @@ def build_gabled_roof(ctx: BuildContext, rc: _RoofCorners) -> None:
             ridge_pos = [(rc.mid_x, ridge_y, rc.rz0 + a) for a in range(rc.length)]
         else:
             ridge_pos = [(rc.rx0 + a, ridge_y, rc.mid_z) for a in range(rc.length)]
-        ctx.editor.placeBlock(ridge_pos, Block(mat_slab, {"type": "bottom"}))
+        ctx.editor.placeBlock(ridge_pos, Block(mat_slab, {"type": "top"}))
 
     # Gable ends
     if rc.pitch_along_x:
@@ -358,7 +358,7 @@ def _build_cross_arm(
         for r in p["ridge_range"]:
             ctx.place_block(
                 p["make_pos_ridge"](r, ridge_y),
-                Block(mat_slab, {"type": "bottom"}),
+                Block(mat_slab, {"type": "top"}),
             )
 
     _build_gable_ends(ctx, p["arm_rc"], peak, faces=[p["gable_face"]])

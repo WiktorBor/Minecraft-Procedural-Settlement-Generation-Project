@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import random
 
 import numpy as np
 
@@ -25,10 +26,12 @@ class PlotPlanner:
         districts,
         taken: set[tuple[int, int]],
         config: SettlementConfig,
+        road_coords: set[tuple[int, int]] | None = None,
     ) -> None:
-        self.analysis  = analysis
-        self.districts = districts
-        self.config    = config
+        self.analysis    = analysis
+        self.districts   = districts
+        self.config      = config
+        self.road_coords = road_coords or set()
 
         # Pre-build a boolean grid of taken cells in local index space so that
         # overlap checks in _valid() are a single numpy slice rather than an
@@ -42,6 +45,37 @@ class PlotPlanner:
                 self._taken_mask[li, lj] = True
             except ValueError:
                 pass  # cell outside best_area — ignore
+
+    # ------------------------------------------------------------------
+    # Orientation helpers
+    # ------------------------------------------------------------------
+
+    def _facing_toward_road(self, wx: int, wz: int, width: int, depth: int) -> str:
+        """
+        Return the cardinal direction ("north"/"south"/"east"/"west") of the
+        plot edge that is closest to any road cell.
+
+        The nearest road cell is found first; then the direction from the plot
+        centre to that cell determines which edge is the "front".
+        If no road cells are known, defaults to "south".
+        """
+        if not self.road_coords:
+            return "south"
+
+        cx = wx + width  / 2.0
+        cz = wz + depth  / 2.0
+
+        rx, rz = min(
+            self.road_coords,
+            key=lambda r: (r[0] - cx) ** 2 + (r[1] - cz) ** 2,
+        )
+
+        dx = rx - cx
+        dz = rz - cz
+
+        if abs(dx) >= abs(dz):
+            return "east" if dx >= 0 else "west"
+        return "south" if dz >= 0 else "north"
 
     # ------------------------------------------------------------------
     # Validation
@@ -128,15 +162,15 @@ class PlotPlanner:
                 width=width, depth=depth, radius=min_dist
             )
 
-            plot_w   = self.config.plot_width.get(dtype, 8)
-            plot_d   = self.config.plot_depth.get(dtype, 8)
-            min_size = self.config.min_plot_size.get(dtype, 4)
+            max_plot_w = self.config.plot_width.get(dtype, 8)
+            max_plot_d = self.config.plot_depth.get(dtype, 8)
+            min_size   = self.config.min_plot_size.get(dtype, 4)
 
-            max_plot = max(min_size, min(width, depth) // 2)
-            plot_w   = min(plot_w, max_plot)
-            plot_d   = min(plot_d, max_plot)
+            area_cap = max(min_size, min(width, depth) // 2)
+            max_plot_w = min(max_plot_w, area_cap)
+            max_plot_d = min(max_plot_d, area_cap)
 
-            if plot_w < min_size or plot_d < min_size:
+            if max_plot_w < min_size or max_plot_d < min_size:
                 logger.debug(
                     "District %d (%s): bounding box %dx%d too small for "
                     "min plot size %d, skipping.",
@@ -147,6 +181,11 @@ class PlotPlanner:
             for lx, lz in sample_points:
                 local_x = int(x_min + lx)
                 local_z = int(z_min + lz)
+
+                # Draw a random plot size for this candidate so the settlement
+                # gets a natural mix of small and large footprints.
+                plot_w = random.randint(min_size, max_plot_w)
+                plot_d = random.randint(min_size, max_plot_d)
 
                 if local_x + plot_w > w or local_z + plot_d > d:
                     continue
@@ -202,10 +241,13 @@ class PlotPlanner:
                     ].max()
                 )
 
+                facing = self._facing_toward_road(wx, wz, plot_w, plot_d)
+
                 plots.append(Plot(
                     x=wx, z=wz, y=plot_y,
                     width=plot_w, depth=plot_d,
                     type=dtype,
+                    facing=facing,
                 ))
 
         logger.info(

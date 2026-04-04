@@ -32,7 +32,7 @@ class SettlementConfig:
 
     # Plot spacing
     min_plot_distance:         int   = 6
-    min_plot_cluster_distance: int   = 4
+    min_plot_cluster_distance: int   = 10
     max_plot_cluster_distance: int   = 30
 
     # Terrain thresholds for plot validation
@@ -60,29 +60,37 @@ class SettlementConfig:
         }
     )
 
-    # Plot dimensions per district type (blocks)
+    # Plot dimensions per district type (blocks).
+    # These are the MAXIMUM target sizes — the planner draws each plot's
+    # actual size randomly between min_plot_size and these values so the
+    # settlement has a natural mix of small and large footprints.
+    # Sizes are set to fit the largest structure in each district pool:
+    #   residential → tavern (12×8), tower_house (10×6)
+    #   fishing     → cottage (6×6), clock_tower (8×8)
+    #   forest      → tavern (12×8), clock_tower (8×8)
+    #   farming     → farm (5×5), market_stall (5×5)
     plot_width: dict[str, int] = field(
         default_factory=lambda: {
-            "residential": 8,
+            "residential": 14,
             "farming":     12,
-            "fishing":     6,
-            "forest":      8,
+            "fishing":     10,
+            "forest":      14,
         }
     )
     plot_depth: dict[str, int] = field(
         default_factory=lambda: {
-            "residential": 8,
+            "residential": 12,
             "farming":     12,
-            "fishing":     6,
-            "forest":      8,
+            "fishing":     10,
+            "forest":      12,
         }
     )
     min_plot_size: dict[str, int] = field(
         default_factory=lambda: {
             "residential": 6,
-            "farming":     10,
+            "farming":     5,
             "fishing":     5,
-            "forest":      6,
+            "forest":      5,
         }
     )
 
@@ -123,7 +131,8 @@ class TerrainConfig:
     slope_scale:                   float = 3.0
     radius:                        int   = 5
     # Slope / roughness thresholds for the patch selector (normalised values,
-    # not block counts). 0.6 / 2.0 was too strict
+    # not block counts). 0.6 / 2.0 was too strict — gentle hills near water
+    # failed on a second run after structures slightly raised roughness.
     # 1.2 / 3.5 accepts any terrain a settlement can reasonably sit on.
     max_slope:                     float = 1.2
     max_roughness:                 float = 3.5
@@ -143,8 +152,8 @@ class TerrainConfig:
     water_proximity_score_mult:    float = 0.5
 
     # Minimum best-area dimensions — PatchSelector expands to meet these
-    min_best_area_width: int = 64
-    min_best_area_depth: int = 64
+    min_best_area_width: int = 125
+    min_best_area_depth: int = 125
 
     # Cap the area actually fetched and analysed.  Very large build areas
     # (e.g. 1001×1001) cause heightmap requests to time out; we only need a

@@ -145,6 +145,7 @@ class SettlementPlanner:
             districts=state.districts,
             taken=state.taken,
             config=self.config,
+            road_coords=state._road_coords,
         )
         for plot in plot_planner.generate():
             state.add_plot(plot)
