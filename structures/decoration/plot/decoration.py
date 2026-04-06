@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from gdpc.editor import Editor
-
 from data.biome_palettes import BiomePalette
 from data.settlement_entities import Plot
 from structures.decoration.plot.decoration_builder import DecorationBuilder
+from world_interface.block_buffer import BlockBuffer
 
 
 class Decoration:
@@ -15,9 +14,9 @@ class Decoration:
 
     def build(
         self,
-        editor: Editor,
+        _editor,
         plot: Plot,
         palette: BiomePalette,
         rotation: int = 0,
-    ) -> None:
-        DecorationBuilder(editor, palette).build(plot)
+    ) -> BlockBuffer:
+        return DecorationBuilder(None, palette).build(plot)

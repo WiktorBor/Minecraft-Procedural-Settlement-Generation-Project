@@ -16,10 +16,12 @@ Changes from original
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from gdpc.editor import Editor
+from dataclasses import dataclass, field
 
-from data.biome_palettes import BiomePalette
+from gdpc import Block
+
+from data.biome_palettes import BiomePalette, palette_get
+from world_interface.block_buffer import BlockBuffer
 
 
 @dataclass
@@ -28,7 +30,8 @@ class Ctx:
     All coordinates, dimensions, and feature flags for a single house build.
 
     Created by HouseGrammar._make_context() and passed to every sub-builder.
-    The editor is supplied at construction time — there is no post-hoc setter.
+    The buffer is the write target — builders call ctx.place_block() or
+    ctx.place_many() to accumulate blocks without touching the world directly.
     """
 
     # World anchor
@@ -60,13 +63,27 @@ class Ctx:
     # Materials
     palette: BiomePalette
 
-    # Editor — required; supplied by HouseGrammar._place() at build time.
-    editor: Editor
+    # Write target — all block placements go here.
+    buffer: BlockBuffer = field(default_factory=BlockBuffer)
 
     # Clockwise rotation in degrees — 0, 90, 180, 270.
-    # Applied via editor.pushTransform in HouseGrammar._place().
+    # Applied by HouseGrammar after building via coordinate transform on the buffer.
     # Must be last so the default doesn't break Python 3.9 dataclass field ordering.
     rotation: int = 0
+
+    # ------------------------------------------------------------------
+    # Block placement helpers (BuildContext-compatible interface)
+    # ------------------------------------------------------------------
+
+    def place_block(self, pos, block: Block) -> None:
+        """Place a single block. pos is (x, y, z)."""
+        self.buffer.place(int(pos[0]), int(pos[1]), int(pos[2]), block)
+
+    def place_many(self, positions, key: str, states: dict | None = None) -> None:
+        """Place a palette-keyed block at every position in the list."""
+        mat   = palette_get(self.palette, key, "minecraft:stone")
+        blk   = Block(mat, states) if states else Block(mat)
+        self.buffer.place_many(positions, blk)
 
     # ------------------------------------------------------------------
     # Derived Y levels

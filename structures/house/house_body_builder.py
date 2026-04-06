@@ -55,15 +55,13 @@ class BodyBuilder:
                 on_edge = dx == 0 or dx == ctx.w - 1 or dz == 0 or dz == ctx.d - 1
                 (found_pos if on_edge else floor_pos).append(pos)
 
-        ctx.editor.placeBlock(found_pos, Block(mat_found))
+        ctx.buffer.place_many(found_pos, Block(mat_found))
         for pos in floor_pos:
             mat = mat_moss if random.random() < 0.10 else mat_floor
-            ctx.editor.placeBlock(pos, Block(mat))
+            ctx.place_block(pos, Block(mat))
 
         # Embed the structure into terrain
-        prim_foundation(
-            _EditorCtxAdapter(ctx), ctx.x, ctx.base_y, ctx.z, ctx.w, ctx.d
-        )
+        prim_foundation(ctx, ctx.x, ctx.base_y, ctx.z, ctx.w, ctx.d)
 
     # ------------------------------------------------------------------
     # Lower storey walls
@@ -92,18 +90,18 @@ class BodyBuilder:
                         continue
                     is_corner = dx == 0 or dx == ctx.w - 1
                     if is_corner or is_top:
-                        ctx.editor.placeBlock((ctx.x + dx, y, face_z), Block(mat_wall))
+                        ctx.place_block((ctx.x + dx, y, face_z), Block(mat_wall))
                     elif is_win:
-                        ctx.editor.placeBlock((ctx.x + dx, y, face_z), Block(mat_window))
+                        ctx.place_block((ctx.x + dx, y, face_z), Block(mat_window))
 
             # X-facing walls (skip corners already placed above)
             for dz in range(1, ctx.d - 1):
                 for face_x in (ctx.x, ctx.x + ctx.w - 1):
                     is_corner_z = dz == 1 or dz == ctx.d - 2
                     if is_corner_z or is_top:
-                        ctx.editor.placeBlock((face_x, y, ctx.z + dz), Block(mat_wall))
+                        ctx.place_block((face_x, y, ctx.z + dz), Block(mat_wall))
                     elif is_win:
-                        ctx.editor.placeBlock((face_x, y, ctx.z + dz), Block(mat_window))
+                        ctx.place_block((face_x, y, ctx.z + dz), Block(mat_window))
 
     # ------------------------------------------------------------------
     # Facade (door face)
@@ -133,19 +131,19 @@ class BodyBuilder:
                 is_win_col  = abs(x - door_x) == 2
 
                 if is_corner or is_top:
-                    ctx.editor.placeBlock((x, y, face_z), Block(mat_wall))
+                    ctx.place_block((x, y, face_z), Block(mat_wall))
                 elif is_door_col and dy in (1, 2):
                     pass  # door blocks placed below
                 elif is_win_col and y == win_y:
-                    ctx.editor.placeBlock((x, y, face_z), Block(mat_window))
+                    ctx.place_block((x, y, face_z), Block(mat_window))
                 else:
-                    ctx.editor.placeBlock((x, y, face_z), Block(mat_wall))
+                    ctx.place_block((x, y, face_z), Block(mat_wall))
 
-        ctx.editor.placeBlock(
+        ctx.place_block(
             (door_x, ctx.base_y + 1, face_z),
             Block(mat_door, {"facing": ctx.door_facing, "half": "lower", "hinge": "left"}),
         )
-        ctx.editor.placeBlock(
+        ctx.place_block(
             (door_x, ctx.base_y + 2, face_z),
             Block(mat_door, {"facing": ctx.door_facing, "half": "upper", "hinge": "left"}),
         )
@@ -192,44 +190,17 @@ class BodyBuilder:
                 is_post = dx == 0 or dx == ctx.w - 1
                 for face_z in (ctx.z, ctx.z + ctx.d - 1):
                     if is_post or is_rail:
-                        ctx.editor.placeBlock((ctx.x + dx, y, face_z), Block(mat_accent))
+                        ctx.place_block((ctx.x + dx, y, face_z), Block(mat_accent))
                     elif dy == ctx.upper_h // 2 + 1:
-                        ctx.editor.placeBlock((ctx.x + dx, y, face_z), Block(mat_window))
+                        ctx.place_block((ctx.x + dx, y, face_z), Block(mat_window))
                     else:
-                        ctx.editor.placeBlock((ctx.x + dx, y, face_z), Block(mat_wall))
+                        ctx.place_block((ctx.x + dx, y, face_z), Block(mat_wall))
 
             # X-facing walls
             for dz in range(1, ctx.d - 1):
                 for face_x in (ctx.x, ctx.x + ctx.w - 1):
                     if is_rail:
-                        ctx.editor.placeBlock((face_x, y, ctx.z + dz), Block(mat_accent))
+                        ctx.place_block((face_x, y, ctx.z + dz), Block(mat_accent))
                     else:
-                        ctx.editor.placeBlock((face_x, y, ctx.z + dz), Block(mat_wall))
+                        ctx.place_block((face_x, y, ctx.z + dz), Block(mat_wall))
 
-
-# ---------------------------------------------------------------------------
-# Internal adapter — lets prim_foundation work with Ctx
-# ---------------------------------------------------------------------------
-
-class _EditorCtxAdapter:
-    """
-    Minimal BuildContext-compatible shim so the generic build_foundation
-    primitive can be called from BodyBuilder without importing BuildContext.
-
-    Only `place_many` is needed; everything else is unused by that primitive.
-    """
-    def __init__(self, ctx: Ctx) -> None:
-        self._ctx = ctx
-
-    @property
-    def palette(self):
-        return self._ctx.palette
-
-    @property
-    def editor(self):
-        return self._ctx.editor
-
-    def place_many(self, positions, key, states=None):
-        mat = palette_get(self._ctx.palette, key, "minecraft:stone")
-        block = Block(mat, states) if states else Block(mat)
-        self._ctx.editor.placeBlock(positions, block)

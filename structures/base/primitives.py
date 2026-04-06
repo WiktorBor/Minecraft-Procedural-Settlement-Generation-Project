@@ -279,23 +279,27 @@ def build_ceiling(
             on_edge = dx == 0 or dx == width - 1 or dz == 0 or dz == depth - 1
             (beam_pos if on_edge else ceil_pos).append(pos)
 
-    ctx.editor.placeBlock(beam_pos, Block(mat_beam))
-    ctx.editor.placeBlock(ceil_pos, Block(mat_ceiling, {"type": "top"}))
+    beam_blk = Block(mat_beam)
+    ceil_blk = Block(mat_ceiling, {"type": "top"})
+    for pos in beam_pos:
+        ctx.place_block(pos, beam_blk)
+    for pos in ceil_pos:
+        ctx.place_block(pos, ceil_blk)
 
     cx = deco_x if deco_x is not None else x + width  // 2
     cz = deco_z if deco_z is not None else z + depth  // 2
 
     if width >= 9 and depth >= 9:
         # Large ceiling: flush light embedded at ceiling level (one block higher)
-        ctx.editor.placeBlock((cx, y, cz), Block(mat_light))
+        ctx.place_block((cx, y, cz), Block(mat_light))
     elif width <= 4 or depth <= 4:
         # Small ceiling: hay bale on the floor with a lantern on top
         hay_y = (floor_y + 1) if floor_y is not None else (y - 2)
-        ctx.editor.placeBlock((cx, hay_y,     cz), Block("minecraft:hay_block", {"axis": "y"}))
-        ctx.editor.placeBlock((cx, hay_y + 1, cz), Block("minecraft:lantern",   {"hanging": "false"}))
+        ctx.place_block((cx, hay_y,     cz), Block("minecraft:hay_block", {"axis": "y"}))
+        ctx.place_block((cx, hay_y + 1, cz), Block("minecraft:lantern",   {"hanging": "false"}))
     else:
         # Default: interior light flush at ceiling level
-        ctx.editor.placeBlock((cx, y, cz), Block(mat_light))
+        ctx.place_block((cx, y, cz), Block(mat_light))
 
 
 def add_lanterns(

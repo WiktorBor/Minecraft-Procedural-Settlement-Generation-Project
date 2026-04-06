@@ -3,18 +3,14 @@ structures/base/build_context.py
 ---------------------------------
 Rotation-aware placement context shared by ALL structure builders.
 
-This is the single source of truth for:
-  • BuildContext   — editor + palette + rotation transform
-  • place_light    — handles hanging block-state safely
-
-Every structure (house, tower, blacksmith, etc.) creates a BuildContext
-and calls primitives through it.  Rotation is applied via GDPC's native
-pushTransform — component functions pass world-absolute coordinates and
-the transform handles the rest.
+BuildContext wraps a BlockBuffer (not the Editor directly). All block
+placement goes through this context so rotation transforms are applied
+uniformly. StructurePlacer is responsible for flushing the buffer to
+Minecraft.
 
 Usage
 -----
-    ctx = BuildContext(editor, palette, rotation=90, origin=(x, y, z), size=(w, d))
+    ctx = BuildContext(buffer, palette, rotation=90, origin=(x, y, z), size=(w, d))
     with ctx.push():
         build_floor(ctx, x, y, z, w, d)
         build_walls(ctx, x, y, z, w, h, d)
@@ -22,15 +18,13 @@ Usage
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Generator
 
 from gdpc import Block
-from gdpc.editor import Editor
-from gdpc.transform import rotatedBoxTransform
-from gdpc.vector_tools import Box
 
 from data.biome_palettes import BiomePalette, palette_get
+from world_interface.block_buffer import BlockBuffer
 
 
 # ---------------------------------------------------------------------------
@@ -44,32 +38,6 @@ HANGING_CAPABLE: frozenset[str] = frozenset({
 })
 
 
-def place_light(
-    editor: Editor,
-    pos: tuple[int, int, int],
-    block_id: str,
-    hanging: bool = False,
-) -> None:
-    """
-    Place a light block, safely applying 'hanging=true' only when supported.
-
-    Torches and similar blocks do not have a hanging property — passing
-    unsupported states raises a CommandSyntaxException in GDPC.  This
-    function guards against that.
-
-    Args:
-        editor:   GDPC Editor instance.
-        pos:      (x, y, z) world position.
-        block_id: Full Minecraft block ID, e.g. 'minecraft:lantern'.
-        hanging:  Whether to attempt hanging=true (silently ignored for
-                  block types that don't support it).
-    """
-    if hanging and block_id in HANGING_CAPABLE:
-        editor.placeBlock(pos, Block(block_id, {"hanging": "true"}))
-    else:
-        editor.placeBlock(pos, Block(block_id))
-
-
 # ---------------------------------------------------------------------------
 # BuildContext
 # ---------------------------------------------------------------------------
@@ -80,47 +48,76 @@ class BuildContext:
     Shared build state passed to all primitive and structure-specific functions.
 
     All block placement goes through this context so rotation transforms
-    are applied uniformly.  Create one per structure and pass it down.
+    are applied uniformly. Create one per structure and pass it down.
+
+    Rotation is applied as a pure coordinate transform — no editor dependency.
 
     Attributes
     ----------
-    editor   : GDPC Editor instance.
+    buffer   : BlockBuffer that accumulates placements for this structure.
     palette  : BiomePalette providing material block IDs by semantic key.
     rotation : Clockwise rotation in degrees — 0, 90, 180, or 270.
-               Applied via editor.pushTransform inside push().
     origin   : (x, y, z) pivot for the rotation transform.
                Set to the structure's anchor corner before calling push().
     size     : (width, depth) of the structure footprint.
-               Used together with origin to compute the rotated bounding box.
+               Used together with origin to compute rotated coordinates.
     """
-    editor:   Editor
+    buffer:   BlockBuffer
     palette:  BiomePalette
-    rotation: int                        = 0
+    rotation: int                         = 0
     origin:   tuple[int, int, int] | None = None
-    size:     tuple[int, int]            = (1, 1)
+    size:     tuple[int, int]             = (1, 1)
+
+    # Active transform flag set by push()
+    _transform_active: bool = field(default=False, init=False, repr=False)
 
     @contextmanager
     def push(self) -> Generator[None, None, None]:
         """
-        Context manager that applies the rotation transform to the editor.
+        Context manager that activates the rotation transform.
 
-        All placeBlock calls inside this block are automatically rotated
-        around `origin`.  On exit the editor's transform is restored.
-
-        When rotation == 0 the transform is skipped entirely — world
-        coordinates are already correct and no offset would be applied.
+        All place* calls inside this block have their (x, z) coordinates
+        rotated around `origin` by `rotation` degrees clockwise.
+        When rotation == 0 no transform is applied.
         """
         if self.rotation == 0:
             yield
             return
 
-        steps     = (self.rotation // 90) % 4
-        ox, oy, oz = self.origin if self.origin else (0, 0, 0)
-        box        = Box(offset=(ox, oy, oz), size=(self.size[0], 1, self.size[1]))
-        transform  = rotatedBoxTransform(box, steps)
-
-        with self.editor.pushTransform(transform):
+        self._transform_active = True
+        try:
             yield
+        finally:
+            self._transform_active = False
+
+    def _apply_transform(self, x: int, y: int, z: int) -> tuple[int, int, int]:
+        """
+        Apply the clockwise rotation transform to world coordinates.
+
+        For a footprint anchored at origin (ox, oy, oz) with size (w, d):
+
+            steps=1 (90° CW):  new_x = ox + (d-1) - (z-oz)
+                                new_z = oz + (x-ox)
+            steps=2 (180°):    new_x = ox + (w-1) - (x-ox)
+                                new_z = oz + (d-1) - (z-oz)
+            steps=3 (270° CW): new_x = ox + (z-oz)
+                                new_z = oz + (w-1) - (x-ox)
+        """
+        if not self._transform_active or self.origin is None:
+            return x, y, z
+
+        steps     = (self.rotation // 90) % 4
+        ox, _, oz = self.origin
+        w, d      = self.size
+        lx, lz    = x - ox, z - oz
+
+        if steps == 1:
+            return ox + (d - 1) - lz, y, oz + lx
+        elif steps == 2:
+            return ox + (w - 1) - lx, y, oz + (d - 1) - lz
+        elif steps == 3:
+            return ox + lz, y, oz + (w - 1) - lx
+        return x, y, z
 
     # ------------------------------------------------------------------
     # Palette helpers
@@ -132,7 +129,7 @@ class BuildContext:
         return Block(block_id, states) if states else Block(block_id)
 
     # ------------------------------------------------------------------
-    # Placement helpers — thin wrappers so callers never touch editor directly
+    # Placement helpers
     # ------------------------------------------------------------------
 
     def place(
@@ -142,15 +139,21 @@ class BuildContext:
         states: dict | None = None,
     ) -> None:
         """Place a single palette block at pos."""
-        self.editor.placeBlock(pos, self.block(key, states))
+        tx, ty, tz = self._apply_transform(*pos)
+        self.buffer.place(tx, ty, tz, self.block(key, states))
 
     def place_block(
         self,
         pos: tuple[int, int, int],
         block: Block,
     ) -> None:
-        """Place a pre-built Block at pos (for blocks that need explicit states)."""
-        self.editor.placeBlock(pos, block)
+        """Place a pre-built Block at pos, rotating block state with the transform."""
+        tx, ty, tz = self._apply_transform(*pos)
+        if self._transform_active:
+            steps = (self.rotation // 90) % 4
+            if steps:
+                block = block.transformed(steps, (False, False, False))
+        self.buffer.place(tx, ty, tz, block)
 
     def place_many(
         self,
@@ -158,8 +161,11 @@ class BuildContext:
         key: str,
         states: dict | None = None,
     ) -> None:
-        """Place a palette block at multiple positions in a single batched call."""
-        self.editor.placeBlock(positions, self.block(key, states))
+        """Place a palette block at multiple positions."""
+        blk = self.block(key, states)
+        for pos in positions:
+            tx, ty, tz = self._apply_transform(*pos)
+            self.buffer.place(tx, ty, tz, blk)
 
     def place_light(
         self,
@@ -167,6 +173,11 @@ class BuildContext:
         key: str = "light",
         hanging: bool = False,
     ) -> None:
-        """Place a light block from the palette, respecting the hanging state rule."""
+        """Place a light block from the palette, respecting the hanging state."""
         block_id = palette_get(self.palette, key, "minecraft:lantern")
-        place_light(self.editor, pos, block_id, hanging=hanging)
+        if hanging and block_id in HANGING_CAPABLE:
+            blk = Block(block_id, {"hanging": "true"})
+        else:
+            blk = Block(block_id)
+        tx, ty, tz = self._apply_transform(*pos)
+        self.buffer.place(tx, ty, tz, blk)

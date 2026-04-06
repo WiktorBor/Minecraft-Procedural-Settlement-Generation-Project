@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from gdpc.editor import Editor
-
 from data.biome_palettes import BiomePalette
 from data.settlement_entities import Plot
 from structures.farm.farm_builder import FarmBuilder
+from world_interface.block_buffer import BlockBuffer
 
 
 class Farm:
@@ -13,11 +12,5 @@ class Farm:
     Placed on 'farming' district plots.
     """
 
-    def build(
-        self,
-        editor: Editor,
-        plot: Plot,
-        palette: BiomePalette,
-        rotation: int = 0,
-    ) -> None:
-        FarmBuilder(editor, palette).build(plot)
+    def build(self, plot: Plot, palette: BiomePalette) -> BlockBuffer:
+        return FarmBuilder(palette).build(plot)

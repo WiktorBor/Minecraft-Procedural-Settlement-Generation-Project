@@ -15,11 +15,11 @@ Minimum plot: 5 wide × 5 deep.
 from __future__ import annotations
 
 from gdpc import Block
-from gdpc.editor import Editor
 
 from data.biome_palettes import BiomePalette, palette_get
 from data.settlement_entities import Plot
 from structures.base.build_context import BuildContext
+from world_interface.block_buffer import BlockBuffer
 from structures.base.primitives import (
     build_belfry_face,
     build_floor,
@@ -41,13 +41,15 @@ class Fortification:
 
     def build(
         self,
-        editor: Editor,
+        _editor,
         plot: Plot,
         palette: BiomePalette,
         rotation: int = 0,
-    ) -> None:
+    ) -> BlockBuffer:
         x, y, z = plot.x, plot.y, plot.z
         w       = plot.width
+
+        buffer = BlockBuffer()
 
         depth  = 5
         wall_h = 6   # blocks y+1 … y+wall_h (6 layers)
@@ -73,7 +75,7 @@ class Fortification:
         stone_pal["floor"]      = wall_mat
         stone_pal["foundation"] = wall_mat
 
-        ctx = BuildContext(editor, stone_pal, rotation=rotation,
+        ctx = BuildContext(buffer, stone_pal, rotation=rotation,
                            origin=(ox, y, z), size=(fort_w, depth))
 
         # Y positions for the arch decoration on the front face
@@ -114,3 +116,5 @@ class Fortification:
                     stair_left ={"facing": "west", "half": "top"},
                     stair_right={"facing": "east", "half": "top"},
                 )
+
+        return buffer

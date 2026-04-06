@@ -4,7 +4,6 @@ import logging
 from typing import Iterable
 
 from gdpc import Block
-from gdpc.editor import Editor
 
 from data.analysis_results import WorldAnalysisResult
 from data.biome_palettes import BiomePalette, palette_get
@@ -12,6 +11,7 @@ from data.build_area import BuildArea
 from data.configurations import SettlementConfig
 from data.settlement_entities import Building
 from structures.tower.tower_builder import TowerBuilder
+from world_interface.block_buffer import BlockBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +39,10 @@ class FortificationBuilder:
 
     def __init__(
         self,
-        editor: Editor,
         analysis: WorldAnalysisResult,
         palette: BiomePalette,
         config: SettlementConfig,
     ) -> None:
-        self.editor   = editor
         self.analysis = analysis
         self.palette  = palette
         self.config   = config
@@ -53,7 +51,7 @@ class FortificationBuilder:
     # Public entry point
     # ------------------------------------------------------------------
 
-    def build(self, buildings: Iterable[Building] | None = None) -> None:
+    def build(self, buildings: Iterable[Building] | None = None) -> BlockBuffer:
         """
         Place the full fortification.
 
@@ -62,6 +60,7 @@ class FortificationBuilder:
         buildings : iterable of Building, optional
             Already-placed structures whose footprints the wall must avoid.
         """
+        buffer    = BlockBuffer()
         area      = self.analysis.best_area
         heightmap = self.analysis.heightmap_ground
         cfg       = self.config
@@ -146,13 +145,15 @@ class FortificationBuilder:
         for cx, cz in corners:
             corner_ground_y = self._sample_ground_y(cx, cz, area, heightmap)
             body_h = max(th, uniform_base_y - corner_ground_y)
-            TowerBuilder(
-                self.editor, self.palette, height=body_h, width=tw,
+            tower_buf = TowerBuilder(
+                None, self.palette, height=body_h, width=tw,
             ).build_at(cx, corner_ground_y, cz)
+            buffer.merge(tower_buf)
 
         # Wall segments — all share the same wall_top_y
         for (side, has_gate), (sx, sz, ex, ez) in zip(wall_sides, wall_midlines):
             self._build_wall_segment(
+                buffer,
                 sx, sz, ex, ez,
                 area, heightmap,
                 wall_top_y, wt, gw,
@@ -164,6 +165,7 @@ class FortificationBuilder:
             )
 
         logger.info("Fortification: 4 towers + 4 walls + 1 gate.")
+        return buffer
 
     # ------------------------------------------------------------------
     # Geometry helpers
@@ -266,6 +268,7 @@ class FortificationBuilder:
 
     def _build_wall_segment(
         self,
+        buffer: BlockBuffer,
         ax: int, az: int,
         bx: int, bz: int,
         area: BuildArea,
@@ -308,6 +311,7 @@ class FortificationBuilder:
 
             if is_gate:
                 self._build_gate_column(
+                    buffer,
                     wx, wz, gy, wall_top_y, wall_t, along_x,
                     wall_block, accent_block, found_block,
                     window_block, light_block,
@@ -316,6 +320,7 @@ class FortificationBuilder:
                 )
             else:
                 self._build_wall_column(
+                    buffer,
                     wx, wz, gy, wall_top_y, wall_t, along_x, step,
                     wall_block, accent_block, found_block,
                     light_block, light_props,
@@ -327,6 +332,7 @@ class FortificationBuilder:
 
     def _build_wall_column(
         self,
+        buffer: BlockBuffer,
         wx: int, wz: int, gy: int,
         wall_top_y: int, wall_t: int,
         along_x: bool, step: int,
@@ -338,19 +344,19 @@ class FortificationBuilder:
             oz = t if along_x else 0
             x, z = wx + ox, wz + oz
             for y in range(gy - _FOUND_DEPTH, gy):
-                self.editor.placeBlock((x, y, z), Block(found_block))
+                buffer.place(x, y, z, Block(found_block))
             for y in range(gy, wall_top_y):
-                self.editor.placeBlock((x, y, z), Block(wall_block))
+                buffer.place(x, y, z, Block(wall_block))
 
         is_merlon = (step % 3 != 2)
         if is_merlon:
-            self.editor.placeBlock((wx, wall_top_y, wz), Block(accent_block))
+            buffer.place(wx, wall_top_y, wz, Block(accent_block))
 
         inner_t  = wall_t - 1
         ox_inner = 0 if along_x else inner_t
         oz_inner = inner_t if along_x else 0
-        self.editor.placeBlock(
-            (wx + ox_inner, wall_top_y, wz + oz_inner),
+        buffer.place(
+            wx + ox_inner, wall_top_y, wz + oz_inner,
             Block(accent_block if is_merlon else wall_block),
         )
 
@@ -359,19 +365,11 @@ class FortificationBuilder:
             butt_ox = (-1 if along_x else 0)
             butt_oz = (0 if along_x else -1)
             for dy in range(wall_h_local - 1):
-                self.editor.placeBlock(
-                    (wx + butt_ox, gy + dy, wz + butt_oz),
-                    Block(wall_block),
-                )
-            self.editor.placeBlock(
-                (wx + butt_ox, wall_top_y - 1, wz + butt_oz),
-                Block(accent_block),
-            )
+                buffer.place(wx + butt_ox, gy + dy, wz + butt_oz, Block(wall_block))
+            buffer.place(wx + butt_ox, wall_top_y - 1, wz + butt_oz, Block(accent_block))
 
         if step % 12 == 0 and is_merlon:
-            self.editor.placeBlock(
-                (wx, wall_top_y + 1, wz), Block(light_block, light_props)
-            )
+            buffer.place(wx, wall_top_y + 1, wz, Block(light_block, light_props))
 
     # ------------------------------------------------------------------
     # Gate arch column
@@ -379,6 +377,7 @@ class FortificationBuilder:
 
     def _build_gate_column(
         self,
+        buffer: BlockBuffer,
         wx: int, wz: int, gy: int,
         wall_top_y: int, wall_t: int,
         along_x: bool,
@@ -394,33 +393,31 @@ class FortificationBuilder:
             oz  = t if along_x else 0
             x, z = wx + ox, wz + oz
             for y in range(gy - _FOUND_DEPTH, gy):
-                self.editor.placeBlock((x, y, z), Block(found_block))
+                buffer.place(x, y, z, Block(found_block))
             for dy in range(max(0, wall_h_local)):
                 y = gy + dy
                 if dy < gate_h:
                     if t == 0:
-                        self.editor.placeBlock((x, y, z), Block(window_block))
+                        buffer.place(x, y, z, Block(window_block))
                     else:
-                        self.editor.placeBlock((x, y, z), Block("minecraft:air"))
+                        buffer.place(x, y, z, Block("minecraft:air"))
                 elif dy == gate_h:
-                    self.editor.placeBlock((x, y, z), Block(accent_block))
+                    buffer.place(x, y, z, Block(accent_block))
                 else:
-                    self.editor.placeBlock((x, y, z), Block(wall_block))
+                    buffer.place(x, y, z, Block(wall_block))
 
-        self.editor.placeBlock((wx, wall_top_y, wz), Block(accent_block))
+        buffer.place(wx, wall_top_y, wz, Block(accent_block))
 
         if is_centre:
             hang_props = {"hanging": "true"} if "lantern" in light_block else light_props
-            self.editor.placeBlock(
-                (wx, gy + gate_h - 1, wz), Block(light_block, hang_props)
-            )
+            buffer.place(wx, gy + gate_h - 1, wz, Block(light_block, hang_props))
 
         if not is_centre:
             inner_t  = wall_t - 1
             ox_inner = 0 if along_x else inner_t
             oz_inner = inner_t if along_x else 0
-            self.editor.placeBlock(
-                (wx + ox_inner, gy + gate_h, wz + oz_inner),
+            buffer.place(
+                wx + ox_inner, gy + gate_h, wz + oz_inner,
                 Block("minecraft:wall_torch",
                       {"facing": "south" if along_x else "east"}),
             )

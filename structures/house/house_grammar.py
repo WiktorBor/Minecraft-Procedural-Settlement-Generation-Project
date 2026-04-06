@@ -16,19 +16,20 @@ Shape grammar for procedural medieval house generation.
 
 Usage
 -----
-    grammar = HouseGrammar(editor, palette)
-    grammar.build(plot, rotation=0)
+    grammar = HouseGrammar(palette)
+    buf = grammar.build(plot, rotation=0)    # returns BlockBuffer
 
     # or with raw coordinates (no Plot required):
-    grammar.build_at(x, y, z, w, d, rotation=90)
+    buf = grammar.build_at(x, y, z, w, d, rotation=90)
 """
 from __future__ import annotations
 
 import logging
 import random
+from dataclasses import replace
 from pathlib import Path
 
-from gdpc.editor import Editor
+from gdpc import Block
 from gdpc.transform import rotatedBoxTransform
 from gdpc.vector_tools import Box
 
@@ -40,6 +41,7 @@ from structures.house.house_detail_builder import DetailBuilder
 from structures.house.house_ngram_scorer import BlockSequenceRecorder, HouseNgramScorer
 from structures.house.house_scorer import HouseScorer
 from structures.roofs.roof_builder import build_roof
+from world_interface.block_buffer import BlockBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -51,13 +53,12 @@ class HouseGrammar:
 
     def __init__(
         self,
-        editor: Editor,
+        _editor,
         palette: BiomePalette,
         model_path: Path | None = None,
         scorer: HouseScorer | None = None,
         ngram_scorer: HouseNgramScorer | None = None,
     ) -> None:
-        self.editor  = editor
         self.palette = palette
 
         self.scorer = scorer if scorer is not None else HouseScorer.load(
@@ -76,22 +77,21 @@ class HouseGrammar:
     # Public entry points
     # ------------------------------------------------------------------
 
-    def build(self, plot: Plot, rotation: int = 0) -> None:
-        """Build a house on a Plot object."""
-        self.build_at(plot.x, plot.y, plot.z, plot.width, plot.depth, rotation)
+    def build(self, plot: Plot, rotation: int = 0) -> BlockBuffer:
+        """Build a house on a Plot object. Returns a BlockBuffer."""
+        return self.build_at(plot.x, plot.y, plot.z, plot.width, plot.depth, rotation)
 
     def build_at(
         self,
         x: int, y: int, z: int,
         w: int, d: int,
         rotation: int = 0,
-    ) -> None:
+    ) -> BlockBuffer:
         """
-        Build a house at explicit world coordinates.
+        Build a house at explicit world coordinates. Returns a BlockBuffer.
 
-        Accepts raw (x, y, z, w, d) so callers don't need to construct a Plot.
-        Rotation is stored in the context but actual transform support requires
-        each builder to go through BuildContext.push() — a future enhancement.
+        If rotation != 0, builds in axis-aligned local space then rotates
+        the buffer's coordinates around the footprint centre.
         """
         best_ctx:   Ctx | None = None
         best_score: float      = -1.0
@@ -102,9 +102,10 @@ class HouseGrammar:
             rf_score = self.scorer.score(params)
 
             # Probe block sequence without touching the world
-            null_recorder = BlockSequenceRecorder(_NullEditor())
-            self._place(ctx, editor_override=null_recorder)
-            sequence = null_recorder.finish()
+            recorder = BlockSequenceRecorder()
+            probe_ctx = replace(ctx, buffer=recorder)
+            self._do_place(probe_ctx)
+            sequence = recorder.finish()
 
             score = self.ngram_scorer.blend(rf_score, sequence)
 
@@ -121,57 +122,45 @@ class HouseGrammar:
             best_score, best_ctx.roof_type,
             best_ctx.has_upper, best_ctx.has_chimney,
         )
-        self._place(best_ctx)
+
+        # Build into a fresh buffer
+        final_ctx = replace(best_ctx, buffer=BlockBuffer())
+        self._do_place(final_ctx)
+        buf = final_ctx.buffer
+
+        # Apply rotation if needed.
+        # Use the internal (swapped + clamped) dimensions that the house was
+        # actually built with — NOT the original plot w/d — so the pivot
+        # calculation in _rotate_buffer reflects the real footprint size.
+        if rotation != 0:
+            buf = _rotate_buffer(buf, x, z, best_ctx.w, best_ctx.d, rotation)
+
+        return buf
 
     # ------------------------------------------------------------------
     # Block placement
     # ------------------------------------------------------------------
 
-    def _place(self, ctx: Ctx, editor_override=None) -> None:
-        """
-        Place all blocks for the given context.
+    def _do_place(self, ctx: Ctx) -> None:
+        """Place all blocks for the given context into ctx.buffer."""
+        self.body.build_foundation(ctx)
+        self.body.build_body(ctx)
+        self.body.build_facade(ctx)
+        self.body.build_ceiling(ctx)
+        if ctx.has_upper:
+            self.body.build_upper(ctx)
 
-        Args:
-            ctx:             Fully populated Ctx (editor field will be set here).
-            editor_override: If provided, replaces ctx.editor for this call.
-                             Pass a BlockSequenceRecorder to probe without
-                             touching the world.
-        """
-        # Inject the real editor (or a recorder) into the context
-        from dataclasses import replace
-        active_ctx = replace(ctx, editor=editor_override if editor_override is not None else self.editor)
+        build_roof(
+            _CtxRoofAdapter(ctx),
+            ctx.x, ctx.roof_base_y, ctx.z,
+            ctx.w, ctx.d,
+            ctx.roof_type,
+        )
 
-        def _do_place():
-            self.body.build_foundation(active_ctx)
-            self.body.build_body(active_ctx)
-            self.body.build_facade(active_ctx)
-            self.body.build_ceiling(active_ctx)
-            if active_ctx.has_upper:
-                self.body.build_upper(active_ctx)
-
-            build_roof(
-                _CtxRoofAdapter(active_ctx),
-                active_ctx.x, active_ctx.roof_base_y, active_ctx.z,
-                active_ctx.w, active_ctx.d,
-                active_ctx.roof_type,
-            )
-
-            if active_ctx.has_chimney:
-                self.detail.build_chimney(active_ctx)
-            self.detail.build_interior(active_ctx)
-            self.detail.build_details(active_ctx)
-
-        if active_ctx.rotation == 0:
-            _do_place()
-        else:
-            steps     = (active_ctx.rotation // 90) % 4
-            box       = Box(
-                offset=(active_ctx.x, active_ctx.y, active_ctx.z),
-                size=(active_ctx.w, 1, active_ctx.d),
-            )
-            transform = rotatedBoxTransform(box, steps)
-            with active_ctx.editor.pushTransform(transform):
-                _do_place()
+        if ctx.has_chimney:
+            self.detail.build_chimney(ctx)
+        self.detail.build_interior(ctx)
+        self.detail.build_details(ctx)
 
     # ------------------------------------------------------------------
     # Scorer bridge
@@ -205,17 +194,9 @@ class HouseGrammar:
         rotation: int,
         force_bad: bool = False,
     ) -> Ctx:
-        """
-        Sample grammar parameters and build a Ctx.
-
-        Args:
-            force_bad: When True, forces structurally poor combinations so the
-                       eval script can generate sequences that genuinely differ
-                       from good ones for n-gram training.
-        """
+        """Sample grammar parameters and build a Ctx."""
         # For east/west plots the footprint is rotated 90° — swap w/d so the
-        # local build dimensions match the plot's narrower axis before the
-        # transform flips them back into the correct world orientation.
+        # local build dimensions match the plot's narrower axis.
         if rotation in (90, 270):
             w, d = d, w
 
@@ -224,11 +205,7 @@ class HouseGrammar:
         if w % 2 == 0: w -= 1
         if d % 2 == 0: d -= 1
 
-        # Door is always on the local z_max face (door_face=1 = "south" in
-        # local space).  GDPC's pushTransform rotates it to the correct world
-        # direction.  Exception: for rotation=180 (north-facing plot) the
-        # z_max face rotates to face north correctly, so door_face=1 still works.
-        door_face = 1
+        door_face = 0   # facade on local north face (low Z) — matches all other builders
 
         if force_bad:
             wall_h      = random.choice([3, 5])
@@ -268,23 +245,42 @@ class HouseGrammar:
             has_porch=has_porch,
             door_face=door_face,
             palette=self.palette,
-            editor=self.editor,
+            buffer=BlockBuffer(),
         )
 
 
 # ---------------------------------------------------------------------------
-# Null editor for ngram probing
+# Rotation helper — transforms a buffer's coords around the footprint pivot
 # ---------------------------------------------------------------------------
 
-class _NullEditor:
-    """Discards all placeBlock calls — used during ngram sequence probing."""
-    def placeBlock(self, position, block) -> None:
-        pass
-    def pushTransform(self, transform):
-        from contextlib import nullcontext
-        return nullcontext()
-    def __getattr__(self, name):
-        return lambda *a, **kw: None
+def _rotate_buffer(
+    buf: BlockBuffer,
+    ox: int, oz: int,
+    w: int, d: int,
+    rotation: int,
+) -> BlockBuffer:
+    """
+    Rotate all block positions and block states in buf by `rotation` degrees
+    (0/90/180/270) clockwise around the footprint anchor (ox, oz).
+
+    Uses GDPC's rotatedBoxTransform for coordinate rotation and
+    Block.transformed() for block state rotation — same logic as pushTransform.
+    """
+    steps = (rotation // 90) % 4
+    if steps == 0:
+        return buf
+
+    # Build the same transform GDPC would use via pushTransform
+    box       = Box(offset=(ox, 0, oz), size=(w, 1, d))
+    transform = rotatedBoxTransform(box, steps)
+
+    rotated = BlockBuffer()
+    for (x, y, z), block in buf.items():
+        new_pos = transform.apply((x, y, z))
+        rotated.place(int(new_pos[0]), int(new_pos[1]), int(new_pos[2]),
+                      block.transformed(transform.rotation, transform.flip))
+
+    return rotated
 
 
 # ---------------------------------------------------------------------------
@@ -294,9 +290,7 @@ class _NullEditor:
 class _CtxRoofAdapter:
     """
     Makes Ctx compatible with build_roof's BuildContext interface.
-
-    build_roof only needs palette.get(), palette_get(), place_block(),
-    and editor.placeBlock() — this adapter provides exactly those.
+    build_roof only needs palette and place_block().
     """
     def __init__(self, ctx: Ctx) -> None:
         self._ctx = ctx
@@ -305,9 +299,5 @@ class _CtxRoofAdapter:
     def palette(self):
         return self._ctx.palette
 
-    @property
-    def editor(self):
-        return self._ctx.editor
-
-    def place_block(self, pos, block):
-        self._ctx.editor.placeBlock(pos, block)
+    def place_block(self, pos, block: Block):
+        self._ctx.place_block(pos, block)

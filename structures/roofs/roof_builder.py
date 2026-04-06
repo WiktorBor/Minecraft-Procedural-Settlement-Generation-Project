@@ -86,6 +86,24 @@ class _RoofCorners:
         return self.rz0 + self.rd // 2
 
 
+class _ArmRC:
+    """Minimal _RoofCorners-compatible object for cross-arm gable ends."""
+    def __init__(self, rx0, rx1, rz0, rz1, ry):
+        self.rx0, self.rx1 = rx0, rx1
+        self.rz0, self.rz1 = rz0, rz1
+        self.ry = ry
+
+    @property
+    def rw(self): return self.rx1 - self.rx0
+    @property
+    def rd(self): return self.rz1 - self.rz0
+    @property
+    def pitch_along_x(self): return self.rw <= self.rd
+    @property
+    def mid_x(self): return self.rx0 + self.rw // 2
+    @property
+    def mid_z(self): return self.rz0 + self.rd // 2
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -115,7 +133,6 @@ def build_roof(
         _build_cross_gabled(ctx, rc)
     else:
         build_gabled_roof(ctx, rc)
-
 
 # ---------------------------------------------------------------------------
 # Pyramid
@@ -163,7 +180,6 @@ def _build_pyramid(
         for pz in range(z0 + max_layers, z1 - max_layers + 1):
             ctx.place_block((px, ridge_y, pz), Block(mat_slab, {"type": "top"}))
 
-
 # ---------------------------------------------------------------------------
 # Gabled
 # ---------------------------------------------------------------------------
@@ -208,7 +224,8 @@ def build_gabled_roof(ctx: BuildContext, rc: _RoofCorners) -> None:
             ridge_pos = [(rc.mid_x, ridge_y, rc.rz0 + a) for a in range(rc.length)]
         else:
             ridge_pos = [(rc.rx0 + a, ridge_y, rc.mid_z) for a in range(rc.length)]
-        ctx.editor.placeBlock(ridge_pos, Block(mat_slab, {"type": "top"}))
+        for pos in ridge_pos:
+            ctx.place_block(pos, Block(mat_slab, {"type": "bottom"}))
 
     # Gable ends
     if rc.pitch_along_x:
@@ -216,12 +233,12 @@ def build_gabled_roof(ctx: BuildContext, rc: _RoofCorners) -> None:
     else:
         _build_gable_ends(ctx, rc, peak, faces=[rc.rx0 + 1, rc.rx1 - 2])
 
-
 def _build_gable_ends(
     ctx: BuildContext,
-    rc: _RoofCorners,
+    rc,
     peak: int,
     faces: list[int],
+    accent: bool = True,
 ) -> None:
     """Fill the triangular gable ends with wall + accent + window blocks."""
     mat_wall   = ctx.palette.get("wall",   "minecraft:spruce_planks")
@@ -233,8 +250,9 @@ def _build_gable_ends(
             for layer in range(peak):
                 for gx in range(rc.rx0 + layer + 1, rc.rx1 - 1 - layer):
                     ctx.place_block((gx, rc.ry + layer, gz), Block(mat_wall))
-            for gx in range(rc.rx0 + 1, rc.rx1 - 1):
-                ctx.place_block((gx, rc.ry, gz), Block(mat_accent))
+            if accent:
+                for gx in range(rc.rx0 + 1, rc.rx1 - 1):
+                    ctx.place_block((gx, rc.ry, gz), Block(mat_accent))
             if peak >= 3:
                 if rc.rw % 2 == 0:
                     ctx.place_block((rc.mid_x - 1, rc.ry + 1, gz), Block(mat_window))
@@ -246,15 +264,15 @@ def _build_gable_ends(
             for layer in range(peak):
                 for gz in range(rc.rz0 + layer + 1, rc.rz1 - 1 - layer):
                     ctx.place_block((gx, rc.ry + layer, gz), Block(mat_wall))
-            for gz in range(rc.rz0 + 1, rc.rz1 - 1):
-                ctx.place_block((gx, rc.ry, gz), Block(mat_accent))
+            if accent:
+                for gz in range(rc.rz0 + 1, rc.rz1 - 1):
+                    ctx.place_block((gx, rc.ry, gz), Block(mat_accent))
             if peak >= 3:
                 if rc.rd % 2 == 0:
                     ctx.place_block((gx, rc.ry + 1, rc.mid_z - 1), Block(mat_window))
                     ctx.place_block((gx, rc.ry + 1, rc.mid_z),     Block(mat_window))
                 else:
                     ctx.place_block((gx, rc.ry + 1, rc.mid_z), Block(mat_window))
-
 
 # ---------------------------------------------------------------------------
 # Cross-gabled
@@ -281,8 +299,8 @@ def _cross_arm_params(rc: _RoofCorners, peak: int, side: str) -> dict:
             inner_start    = rc.rz1 - 1  if south else rc.rz0,
             inner_step     = -1           if south else  1,
             stair_range    = (lambda iz: range(iz + 1, rc.rz1)) if south else (lambda iz: range(rc.rz0, iz)),
-            perp_a         = lambda layer: rc.rx0 + layer + 1,
-            perp_b         = lambda layer: rc.rx1 - 2 - layer,
+            perp_a         = lambda layer: rc.mid_x - (peak - layer),
+            perp_b         = lambda layer: rc.mid_x + (peak - layer),
             facing_a       = "east",
             facing_b       = "west",
             shape_a        = "inner_left"  if south else "inner_right",
@@ -290,9 +308,9 @@ def _cross_arm_params(rc: _RoofCorners, peak: int, side: str) -> dict:
             make_pos_inner = lambda perp, y, inner: (perp, y, inner),
             make_pos_arm   = lambda perp, y, along: (perp, y, along),
             make_pos_ridge = lambda r, ry: (rc.mid_x, ry, r),
-            ridge_range    = range(rc.mid_z + 2, rc.rz1 + 1) if south else range(rc.rz0 + 1, rc.mid_z - 1),
+            ridge_range    = range(rc.mid_z + 1, rc.rz1) if south else range(rc.rz0, rc.mid_z + 1),
             gable_face     = rc.rz1 - 2  if south else rc.rz0 + 1,
-            arm_rc         = _ArmRC(rc.rx0, rc.rx1, rc.rz0, rc.rz0 + rc.rw, rc.ry),
+            arm_rc         = _ArmRC(rc.mid_x - peak, rc.mid_x + peak + 1, rc.rz0, rc.rz0 + 2 * peak + 2, rc.ry),
         )
     else:
         east = (side == "east")
@@ -300,8 +318,8 @@ def _cross_arm_params(rc: _RoofCorners, peak: int, side: str) -> dict:
             inner_start    = rc.rx1 - 1  if east else rc.rx0,
             inner_step     = -1           if east else  1,
             stair_range    = (lambda ix: range(ix + 1, rc.rx1)) if east else (lambda ix: range(rc.rx0, ix)),
-            perp_a         = lambda layer: rc.rz0 + layer + 1,
-            perp_b         = lambda layer: rc.rz1 - 2 - layer,
+            perp_a         = lambda layer: rc.mid_z - (peak - layer),
+            perp_b         = lambda layer: rc.mid_z + (peak - layer),
             facing_a       = "south",
             facing_b       = "north",
             shape_a        = "inner_left"  if east else "inner_right",
@@ -309,9 +327,9 @@ def _cross_arm_params(rc: _RoofCorners, peak: int, side: str) -> dict:
             make_pos_inner = lambda perp, y, inner: (inner, y, perp),
             make_pos_arm   = lambda perp, y, along: (along, y, perp),
             make_pos_ridge = lambda r, ry: (r, ry, rc.mid_z),
-            ridge_range    = range(rc.mid_x + 2, rc.rx1) if east else range(rc.rx0, rc.mid_x - 1),
+            ridge_range    = range(rc.mid_x + 1, rc.rx1) if east else range(rc.rx0, rc.mid_x + 1),
             gable_face     = rc.rx1 - 2  if east else rc.rx0 + 1,
-            arm_rc         = _ArmRC(rc.rx0 - 1, rc.rx0 + rc.rd + 1, rc.rz0 + 1, rc.rz1 - 1, rc.ry),
+            arm_rc         = _ArmRC(rc.rx0, rc.rx0 + 2 * peak + 2, rc.mid_z - peak, rc.mid_z + peak + 1, rc.ry),
         )
 
 
@@ -327,9 +345,16 @@ def _build_cross_arm(
     if peak < 2:
         return
 
-    p = _cross_arm_params(rc, peak, side)
+    # Arm spans the full range from ceiling (rc.ry) to the main peak.
+    # Centered perp (mid_x / mid_z) never crosses, so no convergence clamp needed.
+    arm_peak = peak
 
-    for layer in range(peak):
+    if arm_peak < 2:
+        return
+
+    p = _cross_arm_params(rc, arm_peak, side)
+
+    for layer in range(arm_peak + 1):
         arm_y  = rc.ry + layer
         inner  = p["inner_start"] + p["inner_step"] * layer
         perp_a = p["perp_a"](layer)
@@ -354,30 +379,10 @@ def _build_cross_arm(
             )
 
     if rc.span % 2 == 1:
-        ridge_y = rc.ry + peak - 1
+        ridge_y = rc.ry + arm_peak
         for r in p["ridge_range"]:
             ctx.place_block(
                 p["make_pos_ridge"](r, ridge_y),
-                Block(mat_slab, {"type": "top"}),
+                Block(mat_slab, {"type": "bottom"}),
             )
-
-    _build_gable_ends(ctx, p["arm_rc"], peak, faces=[p["gable_face"]])
-
-
-class _ArmRC:
-    """Minimal _RoofCorners-compatible object for cross-arm gable ends."""
-    def __init__(self, rx0, rx1, rz0, rz1, ry):
-        self.rx0, self.rx1 = rx0, rx1
-        self.rz0, self.rz1 = rz0, rz1
-        self.ry = ry
-
-    @property
-    def rw(self): return self.rx1 - self.rx0
-    @property
-    def rd(self): return self.rz1 - self.rz0
-    @property
-    def pitch_along_x(self): return self.rw <= self.rd
-    @property
-    def mid_x(self): return self.rx0 + self.rw // 2
-    @property
-    def mid_z(self): return self.rz0 + self.rd // 2
+    _build_gable_ends(ctx, p["arm_rc"], arm_peak, faces=[p["gable_face"]], accent=False)

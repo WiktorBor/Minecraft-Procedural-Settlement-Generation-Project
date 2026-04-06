@@ -68,10 +68,9 @@ import math
 import pickle
 from collections import defaultdict
 from pathlib import Path
-from typing import Sequence
+
 
 from gdpc import Block
-from gdpc.editor import Editor
 
 logger = logging.getLogger(__name__)
 
@@ -92,57 +91,47 @@ def _nested_int():
 
 class BlockSequenceRecorder:
     """
-    Wraps a GDPC Editor and records every block ID passed to placeBlock.
+    Records every block ID placed via the BlockBuffer interface.
 
-    Drop-in replacement: pass an instance wherever an Editor is expected.
-    All calls are forwarded to the real editor so the world is still built.
+    Implements the same place() / place_many() interface as BlockBuffer so
+    it can be used as a drop-in ctx.buffer during grammar probing — no real
+    world writes happen, only the block sequence is captured.
 
     Example
     -------
-        recorder = BlockSequenceRecorder(real_editor)
-        grammar  = HouseGrammar(recorder, palette)
-        grammar.build(plot)
+        recorder = BlockSequenceRecorder()
+        temp_ctx = replace(ctx, buffer=recorder)
+        grammar._do_place(temp_ctx)
         sequence = recorder.finish()   # list[str] of block IDs
     """
 
-    def __init__(self, editor: Editor) -> None:
-        self._editor   = editor
+    def __init__(self) -> None:
         self._sequence: list[str] = []
         self._base_y:   int | None = None
 
     # ------------------------------------------------------------------
-    # Editor interface — forward everything, intercept placeBlock
+    # BlockBuffer interface — intercept place/place_many
     # ------------------------------------------------------------------
 
-    def placeBlock(
-        self,
-        position,
-        block: Block | Sequence[Block],
-    ) -> None:
-        """Forward to real editor and record the block ID(s)."""
-        self._editor.placeBlock(position, block)
+    def place(self, _x: int, y: int, _z: int, block: Block) -> None:
+        """Record placement without writing to the world."""
+        if self._base_y is None:
+            self._base_y = int(y)
+        self._record(block, int(y))
 
-        if isinstance(position, (list, tuple)) and len(position) > 0:
-            first = position[0] if isinstance(position[0], (list, tuple)) else position
-            y = int(first[1])
+    def place_many(self, positions, block: Block) -> None:
+        """Record multiple placements without writing to the world."""
+        for pos in positions:
+            y = int(pos[1])
             if self._base_y is None:
                 self._base_y = y
+            self._record(block, y)
 
-        if isinstance(block, Block):
-            self._record(block, position)
+    def _record(self, block: Block, y: int) -> None:
+        y_rel = y - (self._base_y or y)
+        layer = "floor" if y_rel <= 1 else "wall" if y_rel <= 5 else "roof"
+        self._sequence.append(f"{block.id}:{layer}")
 
-    def _record(self, block: Block, position=None) -> None:
-        token = block.id
-        if position is not None and self._base_y is not None:
-            # Extract Y from either a single tuple or first element of a list
-            if isinstance(position[0], (list, tuple)):
-                y = int(position[0][1])
-            else:
-                y = int(position[1])
-            y_rel = y - self._base_y
-            layer = "floor" if y_rel <= 1 else "wall" if y_rel <= 5 else "roof"
-            token = f"{block.id}:{layer}"
-        self._sequence.append(token)
     # ------------------------------------------------------------------
     # Sequence access
     # ------------------------------------------------------------------
@@ -156,18 +145,13 @@ class BlockSequenceRecorder:
         """
         seq = list(self._sequence)
         self._sequence.clear()
+        self._base_y = None
         return seq
 
     def reset(self) -> None:
         """Discard the current recording without returning it."""
         self._sequence.clear()
-
-    # ------------------------------------------------------------------
-    # Proxy remaining Editor attributes transparently
-    # ------------------------------------------------------------------
-
-    def __getattr__(self, name: str):
-        return getattr(self._editor, name)
+        self._base_y = None
 
 # ---------------------------------------------------------------------------
 # NgramLanguageModel

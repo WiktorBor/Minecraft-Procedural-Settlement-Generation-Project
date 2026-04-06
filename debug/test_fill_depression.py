@@ -18,7 +18,7 @@ from analysis.world_analysis import WorldAnalyser
 from data.configurations import TerrainConfig
 from utils.http_client import GDMCClient
 from world_interface.terrain_loader import TerrainLoader
-from world_interface.terraforming import fill_depressions, refresh_ground_heightmap
+from world_interface.terraforming import fill_depressions, recompute_all_maps
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -55,7 +55,7 @@ def main() -> int:
 
     # --- Terraforming ---
     logger.info("Running fill_depressions (auto threshold)...")
-    fill_depressions(editor=editor, analysis=analysis)
+    fill_depressions(editor=editor, analysis=analysis, config=terrain_config)
 
     after_fill = analysis.heightmap_ground.copy()
     changed    = int((after_fill != before).sum())
@@ -70,7 +70,7 @@ def main() -> int:
 
     # --- Refresh heightmap from HTTP API ---
     logger.info("Refreshing heightmap_ground via HTTP API (MOTION_BLOCKING_NO_PLANTS)...")
-    refresh_ground_heightmap(terrain_loader, analysis)
+    recompute_all_maps(editor, analysis, terrain_config, terrain_loader=terrain_loader)
     after_refresh = analysis.heightmap_ground.copy()
     logger.info(
         "  After refresh — min=%d  max=%d  median=%.1f",

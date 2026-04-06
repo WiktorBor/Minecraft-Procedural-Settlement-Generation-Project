@@ -21,12 +21,12 @@ Minimum plot: 10 wide × 6 deep.
 from __future__ import annotations
 
 from gdpc import Block
-from gdpc.editor import Editor
 
 from data.analysis_results import WorldAnalysisResult
 from data.biome_palettes import BiomePalette, palette_get
 from data.settlement_entities import Plot
 from structures.base.build_context import BuildContext
+from world_interface.block_buffer import BlockBuffer
 from structures.base.primitives import (
     add_chimney,
     add_door,
@@ -56,14 +56,16 @@ class SpireTower:
 
     def build(
         self,
-        editor: Editor,
+        _editor,
         plot: Plot,
         palette: BiomePalette,
         rotation: int = 0,
         analysis: WorldAnalysisResult | None = None,
-    ) -> None:
+    ) -> BlockBuffer:
         x, y, z = plot.x, plot.y, plot.z
         w, d    = plot.width, plot.depth
+
+        buffer = BlockBuffer()
 
         # ----------------------------------------------------------------
         # Sizing
@@ -74,15 +76,14 @@ class SpireTower:
         hx = x + tw                    # house wing X origin
 
         if hw < 4 or td < 3:
-            return
+            return buffer
 
         # ----------------------------------------------------------------
         # Materials
         # ----------------------------------------------------------------
-        stone     = palette_get(palette, "foundation", "minecraft:stone_bricks")
-        log       = palette_get(palette, "accent",     "minecraft:dark_oak_log")
-        plank     = palette_get(palette, "wall",       "minecraft:dark_oak_planks")
-        door_id   = palette_get(palette, "door",       "minecraft:spruce_door")
+        stone   = palette_get(palette, "foundation", "minecraft:stone_bricks")
+        plank   = palette_get(palette, "wall",       "minecraft:dark_oak_planks")
+        door_id = palette_get(palette, "door",       "minecraft:spruce_door")
 
         # Stone palette for the tower base — overrides wall/floor to stone bricks
         stone_pal = dict(palette)
@@ -93,10 +94,10 @@ class SpireTower:
         stone_pal["accent_beam"]    = "minecraft:stripped_dark_oak_log"
         stone_pal["interior_light"] = "minecraft:lantern"
 
-        # Both contexts share the same origin + size so rotation pivots match
-        ctx       = BuildContext(editor, palette,   rotation=rotation,
+        # Both contexts share the same buffer + origin + size so rotation pivots match
+        ctx       = BuildContext(buffer, palette,   rotation=rotation,
                                  origin=(x, y, z),  size=(w, d))
-        ctx_stone = BuildContext(editor, stone_pal, rotation=rotation,
+        ctx_stone = BuildContext(buffer, stone_pal, rotation=rotation,
                                  origin=(x, y, z),  size=(w, d))
 
         # Compute how deep each section's foundation must go to always reach
@@ -178,6 +179,7 @@ class SpireTower:
                     Block(door_id, {"facing": "east", "half": "upper", "hinge": "left"}),
                 )
 
+        return buffer
 
     @staticmethod
     def _foundation_depth(

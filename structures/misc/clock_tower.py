@@ -9,12 +9,12 @@ BiomePalette keys and the project's Plot convention.
 from __future__ import annotations
 
 from gdpc import Block
-from gdpc.editor import Editor
 
 from data.biome_palettes import BiomePalette, palette_get
 from data.settlement_entities import Plot
 
 from structures.base.build_context import BuildContext
+from world_interface.block_buffer import BlockBuffer
 from structures.base.primitives import (
     add_door,
     build_ceiling,
@@ -36,11 +36,11 @@ class ClockTower:
 
     def build(
         self,
-        editor: Editor,
+        _editor,
         plot: Plot,
         palette: BiomePalette,
         rotation: int = 0,
-    ) -> None:
+    ) -> BlockBuffer:
         y  = plot.y
         cx = plot.x + plot.width  // 2
         cz = plot.z + plot.depth  // 2
@@ -51,7 +51,8 @@ class ClockTower:
 
         log = palette_get(palette, "accent", "minecraft:dark_oak_log")
 
-        ctx = BuildContext(editor, palette, rotation=rotation,
+        buffer = BlockBuffer()
+        ctx = BuildContext(buffer, palette, rotation=rotation,
                            origin=(ox, y, oz), size=(tw, tw))
 
         with ctx.push():
@@ -104,3 +105,5 @@ class ClockTower:
             ctx.place_block((cx, apex_y,     cz), Block("minecraft:stone_bricks"))
             ctx.place_block((cx, apex_y + 1, cz), Block("minecraft:iron_bars"))
             ctx.place_block((cx, apex_y + 2, cz), Block("minecraft:lightning_rod"))
+
+        return buffer
