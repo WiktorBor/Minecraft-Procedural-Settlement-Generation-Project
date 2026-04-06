@@ -16,66 +16,29 @@ logger = logging.getLogger(__name__)
 
 class SettlementPlanner:
     """
-    Orchestrates district, plot, and road generation to produce a SettlementState.
+    Orchestrates district, road, and plot generation to produce a SettlementState.
 
-    Full pipeline (with mid-step world interaction)
-    -----------------------------------------------
-    1. plan_districts()   — choose centre, generate Voronoi districts.
-    2. Caller places fountains and registers their cells into state.taken.
-    3. plan_roads(state)  — road network connecting district centres.
-    4. Caller places roads in the world (terraforming, block placement).
-    5. plan_plots(state)  — building plots validated against all taken tiles.
-
-    Quick pipeline (no fountains, no mid-step world interaction)
-    ------------------------------------------------------------
-    Call plan() to run steps 1, 3, 5 in one call. Fountains are skipped —
-    use this for testing or when fountain placement is not required.
+    Each method receives analysis as an argument so the planner can be
+    constructed before world analysis has run.
     """
 
-    def __init__(
-        self,
-        analysis: WorldAnalysisResult,
-        config: SettlementConfig,
-    ) -> None:
-        self.analysis = analysis
-        self.config   = config
+    def __init__(self, config: SettlementConfig) -> None:
+        self.config = config
 
-    def plan(self) -> SettlementState:
+    def plan_districts(self, analysis: WorldAnalysisResult) -> SettlementState:
         """
-        Run districts → roads → plots without any mid-step intervention.
-
-        No fountains are placed and no mid-step world interaction occurs.
-        For the full pipeline with fountain placement, call plan_districts(),
-        register fountain cells into state.taken, then plan_roads(state) and
-        plan_plots(state) separately.
-        """
-        state = self.plan_districts()
-        self.plan_roads(state)
-        self.plan_plots(state)
-        return state
-
-    def plan_districts(self) -> SettlementState:
-        """
-        Phase 1: choose settlement centre and generate Voronoi districts.
+        Choose settlement centre and generate Voronoi districts.
 
         Returns a SettlementState with centre and districts populated.
-        Roads and plots are empty — proceed with fountain placement then
-        call plan_roads(state).
+        Roads and plots are empty — register fountain cells into state.occupancy,
+        then call plan_roads(analysis, state).
         """
-        state = SettlementState()
-
-        state.center = self._choose_center()
+        state        = SettlementState()
+        state.center = self._choose_center(analysis)
         logger.info("Settlement centre: %s", state.center)
 
-        # Pre-compute plaza size so DistrictPlanner can exclude the plaza
-        # area from district assignment before districts are created.
-        # Scale directly from the shortest side of best_area:
-        #   radius = short_side // 10, capped at 15.
-        #   radius < 3  → settlement too small, no plaza.
-        #   radius 3–7  → small plaza (SquareCentre small_fountain style).
-        #   radius ≥ 8  → big plaza   (SquareCentre grand_spire style).
-        area  = self.analysis.best_area
-        w, d  = area.width, area.depth
+        area         = analysis.best_area
+        w, d         = area.width, area.depth
         plaza_radius = min(min(w, d) // 10, 15)
         if plaza_radius < 3:
             plaza_radius = 0
@@ -86,17 +49,16 @@ class SettlementPlanner:
             state.plaza_center = (cx_w, cz_w)
             state.plaza_radius = plaza_radius
 
-            # Exclusion radius covers plaza + gap + ring road outer edge
-            road_width   = self.config.road_width
-            excl_radius  = plaza_radius + road_width + 1 + road_width // 2
-            excl_center  = (w // 2, d // 2)   # local-index centre of best_area
+            road_width  = self.config.road_width
+            excl_radius = plaza_radius + road_width + 1 + road_width // 2
+            excl_center = (w // 2, d // 2)
         else:
             excl_center = None
             excl_radius = 0
 
         logger.info("Planning districts...")
         district_planner = DistrictPlanner(
-            analysis=self.analysis,
+            analysis=analysis,
             config=self.config,
             exclusion_center=excl_center,
             exclusion_radius=excl_radius,
@@ -106,15 +68,12 @@ class SettlementPlanner:
 
         return state
 
-    def plan_roads(self, state: SettlementState) -> None:
+    def plan_roads(self, analysis: WorldAnalysisResult, state: SettlementState) -> None:
         """
-        Phase 3: generate roads connecting district centres.
+        Generate roads connecting district centres. Mutates state in-place.
 
-        Call after plan_districts() and after fountains have been placed and
-        registered into state.taken. Roads are added to state.roads and
-        state.taken so plot planning sees them as blocked.
-
-        Mutates state in-place.
+        Call after plan_districts() and after fountains have been registered
+        into state.occupancy.
         """
         logger.info("Planning roads...")
         hub = (
@@ -123,7 +82,7 @@ class SettlementPlanner:
             else None
         )
         road_planner = RoadPlanner(
-            analysis=self.analysis,
+            analysis=analysis,
             districts=state.districts,
             config=self.config,
             hub_point=hub,
@@ -132,18 +91,17 @@ class SettlementPlanner:
         state.add_road_cells(roads)
         logger.info("Generated %d road cells.", state.road_cell_count)
 
-    def plan_plots(self, state: SettlementState) -> None:
+    def plan_plots(self, analysis: WorldAnalysisResult, state: SettlementState) -> None:
         """
-        Phase 5: generate building plots validated against all taken tiles.
+        Generate building plots validated against all taken tiles. Mutates state in-place.
 
-        Call after plan_roads() so state.taken contains both fountain and
-        road footprints. Mutates state in-place.
+        Call after plan_roads() so state.occupancy contains fountain and road footprints.
         """
         logger.info("Planning plots...")
         plot_planner = PlotPlanner(
-            analysis=self.analysis,
+            analysis=analysis,
             districts=state.districts,
-            taken=state.taken,
+            occupancy=state.occupancy,
             config=self.config,
             road_coords=state._road_coords,
         )
@@ -151,12 +109,10 @@ class SettlementPlanner:
             state.add_plot(plot)
         logger.info("Generated %d plots.", state.plot_count)
 
-    def _choose_center(self) -> tuple[int, int]:
+    def _choose_center(self, analysis: WorldAnalysisResult) -> tuple[int, int]:
         """Return the world (x, z) coordinate of the highest-scoring cell."""
-        scores           = self.analysis.scores
+        scores           = analysis.scores
         idx              = np.argmax(scores)
         local_x, local_z = np.unravel_index(idx, scores.shape)
-        wx, wz           = self.analysis.best_area.index_to_world(
-            int(local_x), int(local_z)
-        )
+        wx, wz           = analysis.best_area.index_to_world(int(local_x), int(local_z))
         return wx, wz

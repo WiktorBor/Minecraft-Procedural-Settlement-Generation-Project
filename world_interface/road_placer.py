@@ -12,11 +12,11 @@ import random
 from collections.abc import Iterable
 
 from gdpc import Block
-from gdpc.editor import Editor
 
 from data.analysis_results import WorldAnalysisResult
 from data.biome_palettes import BiomePalette, palette_get
 from data.settlement_entities import RoadCell
+from world_interface.block_buffer import BlockBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +42,9 @@ class RoadBuilder:
 
     def __init__(
         self,
-        editor: Editor,
         analysis: WorldAnalysisResult,
         palette: BiomePalette,
     ) -> None:
-        self.editor    = editor
         self.analysis  = analysis
         self._path     = Block(palette["path"])
         self._edge     = Block(palette_get(palette, "path_edge", palette["path"]))
@@ -55,9 +53,9 @@ class RoadBuilder:
         self._light    = Block(palette_get(palette, "light", "minecraft:lantern"))
         self._fence    = Block(palette_get(palette, "fence", "minecraft:oak_fence"))
 
-    def build(self, roads: Iterable[RoadCell]) -> None:
+    def build(self, roads: Iterable[RoadCell]) -> BlockBuffer:
         """
-        Place road blocks at each RoadCell position with dynamic styling.
+        Build road blocks into a BlockBuffer.
 
         Cells are classified by their neighbourhood density to decide
         block material.  Height transitions between adjacent road cells
@@ -65,10 +63,11 @@ class RoadBuilder:
         """
         heightmap = self.analysis.heightmap_ground
         area      = self.analysis.best_area
+        buffer    = BlockBuffer()
 
         cells: list[RoadCell] = list(roads)
         if not cells:
-            return
+            return buffer
 
         # Build a lookup so we can inspect each cell's neighbours in O(1).
         coord_set: set[tuple[int, int]] = {(c.x, c.z) for c in cells}
@@ -106,7 +105,7 @@ class RoadBuilder:
             # Height transition: when this cell is higher than a neighbour,
             # place a slab for a smooth half-step.
             if y > min_neighbour_y and (y - min_neighbour_y) == 1:
-                self.editor.placeBlock((cell.x, y, cell.z), self._slab)
+                buffer.place(cell.x, y, cell.z, self._slab)
                 continue
 
             # Pick material based on neighbourhood density.
@@ -126,21 +125,18 @@ class RoadBuilder:
                 if rng.random() < 0.3:
                     block = self._path
 
-            self.editor.placeBlock((cell.x, y, cell.z), block)
+            buffer.place(cell.x, y, cell.z, block)
 
             # Occasional lanterns on edge cells of main roads (not connectors)
             if (not is_connector
                     and road_neighbours <= 2
                     and rng.random() < 0.06):
                 light_counter += 1
-                self.editor.placeBlock(
-                    (cell.x, y + 1, cell.z), self._fence
-                )
-                self.editor.placeBlock(
-                    (cell.x, y + 2, cell.z), self._light
-                )
+                buffer.place(cell.x, y + 1, cell.z, self._fence)
+                buffer.place(cell.x, y + 2, cell.z, self._light)
 
         logger.info(
-            "RoadBuilder: placed %d cells (%d with lanterns).",
+            "RoadBuilder: built %d cells (%d with lanterns).",
             len(cells), light_counter,
         )
+        return buffer

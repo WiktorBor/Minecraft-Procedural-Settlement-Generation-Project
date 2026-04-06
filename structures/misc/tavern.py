@@ -11,11 +11,11 @@ Minimum plot: 20 wide × 12 deep.
 from __future__ import annotations
 
 from gdpc import Block
-from gdpc.editor import Editor
 
 from data.biome_palettes import BiomePalette, palette_get
 from data.settlement_entities import Plot
 from structures.base.build_context import BuildContext
+from world_interface.block_buffer import BlockBuffer
 from structures.base.primitives import (
     add_door,
     add_lanterns,
@@ -38,13 +38,15 @@ class Tavern:
 
     def build(
         self,
-        editor: Editor,
+        _editor,
         plot: Plot,
         palette: BiomePalette,
         rotation: int = 0,
-    ) -> None:
+    ) -> BlockBuffer:
         x, y, z = plot.x, plot.y, plot.z
         w, d    = plot.width, plot.depth
+
+        buffer = BlockBuffer()
 
         # Partition width: tavern ~50%, bridge ~20%, tower ~30%
         tw = max(7,  int(w * 0.50))
@@ -52,11 +54,10 @@ class Tavern:
         gw = w - tw - bw
 
         if gw < 4:
-            return
+            return buffer
 
         wall_mat = palette_get(palette, "wall",       "minecraft:white_terracotta")
         frame    = palette_get(palette, "accent",     "minecraft:spruce_log")
-        door_mat = palette_get(palette, "door",       "minecraft:spruce_door")
         fence    = palette_get(palette, "fence",      "minecraft:spruce_fence")
         light    = palette_get(palette, "light",      "minecraft:lantern")
         path_mat = palette_get(palette, "path",       "minecraft:stone_bricks")
@@ -68,7 +69,7 @@ class Tavern:
         # ----------------------------------------------------------------
         # PART 1: Elevated tavern
         # ----------------------------------------------------------------
-        ctx_t = BuildContext(editor, palette, rotation=rotation,
+        ctx_t = BuildContext(buffer, palette, rotation=rotation,
                              origin=(x, y, z), size=(tw, d))
         with ctx_t.push():
             # Stilts at four corners
@@ -101,7 +102,7 @@ class Tavern:
         # ----------------------------------------------------------------
         bx   = x + tw
         b_h  = 3
-        ctx_b = BuildContext(editor, palette, rotation=rotation,
+        ctx_b = BuildContext(buffer, palette, rotation=rotation,
                              origin=(bx, y, z), size=(bw, d))
         with ctx_b.push():
             # Stone path at ground level
@@ -126,7 +127,7 @@ class Tavern:
         # PART 3: Stone tower
         # ----------------------------------------------------------------
         gx    = x + tw + bw
-        ctx_g = BuildContext(editor, palette, rotation=rotation,
+        ctx_g = BuildContext(buffer, palette, rotation=rotation,
                              origin=(gx, y, z), size=(gw, d))
 
         # Swap wall to stone for the tower
@@ -134,7 +135,7 @@ class Tavern:
         stone_palette["wall"]       = palette_get(palette, "foundation", "minecraft:stone_bricks")
         stone_palette["foundation"] = palette_get(palette, "foundation", "minecraft:stone_bricks")
 
-        ctx_g = BuildContext(editor, stone_palette, rotation=rotation,
+        ctx_g = BuildContext(buffer, stone_palette, rotation=rotation,
                              origin=(gx, y, z), size=(gw, d))
         with ctx_g.push():
             build_foundation(ctx_g, gx, y, z, gw, d)
@@ -147,5 +148,7 @@ class Tavern:
 
         # Fence post + lantern in front of bridge entrance
         lx = bx + bw // 2
-        editor.placeBlock((lx, y + 1, z - 1), Block(fence))
-        editor.placeBlock((lx, y + 2, z - 1), Block(light))
+        buffer.place(lx, y + 1, z - 1, Block(fence))
+        buffer.place(lx, y + 2, z - 1, Block(light))
+
+        return buffer

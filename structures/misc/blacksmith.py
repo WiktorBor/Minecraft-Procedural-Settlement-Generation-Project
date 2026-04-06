@@ -45,12 +45,11 @@ from __future__ import annotations
 import random
 
 from gdpc import Block
-from gdpc.editor import Editor
 
 from data.biome_palettes import BiomePalette, palette_get
 from data.settlement_entities import Plot
-from structures.base.build_context import place_light
 from structures.roofs.roof_builder import _RoofCorners, build_gabled_roof
+from world_interface.block_buffer import BlockBuffer
 
 
 # ---------------------------------------------------------------------------
@@ -67,16 +66,18 @@ class Blacksmith:
 
     def build(
         self,
-        editor: Editor,
+        _editor,
         plot: Plot,
         palette: BiomePalette,
         rotation: int = 0,
-    ) -> None:
+    ) -> BlockBuffer:
         x, y, z = plot.x, plot.y, plot.z
         w, d    = plot.width, plot.depth
 
+        buffer = BlockBuffer()
+
         if w < 9 or d < 8:
-            return  # too small for a two-wing structure
+            return buffer  # too small for a two-wing structure
 
         # --- Width split ---
         left_w = max(5, (w * 6) // 10)
@@ -98,11 +99,13 @@ class Blacksmith:
         left_h  = 5   # living wing
         right_h = 4   # forge wing
 
-        b = _Builder(editor, palette)
-        b.living_wing(left_x,  y, z, left_w, d,       left_h)
-        b.forge_wing( right_x, y, z, right_w, d,       right_h, forge_d, work_d)
-        b.chimney(    chim_x,  y, z, d,                left_h, right_h)
-        b.connector(  left_x,  y, z, left_w, right_w,  left_h, right_h)
+        b = _Builder(buffer, palette)
+        b.living_wing(left_x,  y, z, left_w, d,      left_h)
+        b.forge_wing( right_x, y, z, right_w, d,      right_h, forge_d, work_d)
+        b.chimney(    chim_x,  y, z, d,               left_h, right_h)
+        b.connector(  left_x,  y, z, left_w, right_w, left_h, right_h)
+
+        return buffer
 
 
 # ---------------------------------------------------------------------------
@@ -111,9 +114,9 @@ class Blacksmith:
 
 class _Builder:
 
-    def __init__(self, editor: Editor, palette: BiomePalette) -> None:
-        self.e  = editor
-        self.p  = palette
+    def __init__(self, buffer: BlockBuffer, palette: BiomePalette) -> None:
+        self.buf = buffer
+        self.p   = palette
 
         # Materials — fall back to sensible defaults if palette key missing
         self.log      = palette_get(palette, "accent_beam", "minecraft:oak_log")
@@ -139,7 +142,7 @@ class _Builder:
         w: int, d: int,
         wall_h: int,
     ) -> None:
-        e = self.e
+        buf = self.buf
 
         # Foundation (2 deep, clamped above world floor y=-64)
         if y - 1 >= -64:
@@ -157,17 +160,17 @@ class _Builder:
             # South + north faces
             for dx in range(w):
                 for fz in (z, z + d - 1):
-                    corner = (dx == 0 or dx == w - 1)
+                    corner  = (dx == 0 or dx == w - 1)
                     on_beam = (wy == beam_y)
                     mat = self.log if (corner or on_beam) else self.plaster
-                    e.placeBlock((x + dx, wy, fz), Block(mat))
+                    buf.place(x + dx, wy, fz, Block(mat))
             # East + west faces (skip corners already placed)
             for dz in range(1, d - 1):
                 for fx in (x, x + w - 1):
                     corner_z = (dz == 1 or dz == d - 2)
                     on_beam  = (wy == beam_y)
                     mat = self.log if (corner_z or on_beam) else self.plaster
-                    e.placeBlock((fx, wy, z + dz), Block(mat))
+                    buf.place(fx, wy, z + dz, Block(mat))
 
         # Door — centred on south face
         self._door(x + w // 2, y, z, "south")
@@ -177,14 +180,15 @@ class _Builder:
         # South face — flank the door
         for wx in (x + w // 2 - 2, x + w // 2 + 2):
             if x < wx < x + w - 1:
-                e.placeBlock((wx, win_y, z), Block(self.window))
+                buf.place(wx, win_y, z, Block(self.window))
         # Side faces — mid-depth
         mid_z = z + d // 2
-        e.placeBlock((x,         win_y, mid_z), Block(self.window))
-        e.placeBlock((x + w - 1, win_y, mid_z), Block(self.window))
+        buf.place(x,         win_y, mid_z, Block(self.window))
+        buf.place(x + w - 1, win_y, mid_z, Block(self.window))
 
-        # Lantern above door (hanging on the outside)
-        place_light(e, (x + w // 2, y + wall_h - 1, z - 1), self.lantern, hanging=True)
+        # Lantern above door (hanging)
+        buf.place(x + w // 2, y + wall_h - 1, z - 1,
+                  Block(self.lantern, {"hanging": "true"}))
 
         # Gabled roof
         self._roof(x, y + wall_h + 1, z, w, d)
@@ -192,12 +196,12 @@ class _Builder:
         # Interior
         fy  = y + 1
         bkz = z + d - 2
-        e.placeBlock((x + 1,     fy, bkz), Block("minecraft:crafting_table"))
-        e.placeBlock((x + w - 2, fy, bkz), Block("minecraft:chest", {"facing": "south"}))
+        buf.place(x + 1,     fy, bkz, Block("minecraft:crafting_table"))
+        buf.place(x + w - 2, fy, bkz, Block("minecraft:chest", {"facing": "south"}))
         if d >= 6:
-            e.placeBlock((x + w - 1, fy,     z + d // 2), Block("minecraft:bookshelf"))
-            e.placeBlock((x + w - 1, fy + 1, z + d // 2), Block("minecraft:bookshelf"))
-        e.placeBlock((x + 1, fy, z + 1), Block("minecraft:potted_azalea_bush"))
+            buf.place(x + w - 1, fy,     z + d // 2, Block("minecraft:bookshelf"))
+            buf.place(x + w - 1, fy + 1, z + d // 2, Block("minecraft:bookshelf"))
+        buf.place(x + 1, fy, z + 1, Block("minecraft:potted_azalea_bush"))
 
     # ------------------------------------------------------------------
     # Forge wing
@@ -211,7 +215,7 @@ class _Builder:
         forge_d: int,
         work_d: int,
     ) -> None:
-        e      = self.e
+        buf    = self.buf
         work_z = z + forge_d
 
         # Foundation
@@ -227,22 +231,22 @@ class _Builder:
         # Overhead beam across the full south face at porch height
         beam_y = y + wall_h
         for dx in range(w):
-            e.placeBlock((x + dx, beam_y, z), Block(self.log))
+            buf.place(x + dx, beam_y, z, Block(self.log))
 
         # Three log pillars on south face
         for px in (x, x + w // 2, x + w - 1):
             for dy in range(1, wall_h):
-                e.placeBlock((px, y + dy, z), Block(self.log))
+                buf.place(px, y + dy, z, Block(self.log))
 
         # Hanging lanterns on the porch beam
         for lx in (x + 1, x + w - 2):
-            place_light(e, (lx, beam_y - 1, z), self.lantern, hanging=True)
+            buf.place(lx, beam_y - 1, z, Block(self.lantern, {"hanging": "true"}))
 
         # Side walls of porch section (east + west only, no south)
         for dy in range(1, wall_h + 1):
             for dz in range(1, forge_d):
-                e.placeBlock((x,         y + dy, z + dz), Block(self.wall_r))
-                e.placeBlock((x + w - 1, y + dy, z + dz), Block(self.wall_r))
+                buf.place(x,         y + dy, z + dz, Block(self.wall_r))
+                buf.place(x + w - 1, y + dy, z + dz, Block(self.wall_r))
 
         # ---- Enclosed work area ----
         for dy in range(1, wall_h + 1):
@@ -250,22 +254,22 @@ class _Builder:
             mid = x + w // 2
             # Back wall
             for dx in range(w):
-                e.placeBlock((x + dx, wy, z + d - 1), Block(self.wall_r))
+                buf.place(x + dx, wy, z + d - 1, Block(self.wall_r))
             # Side walls (work section)
             for dz in range(forge_d, d - 1):
-                e.placeBlock((x,         wy, z + dz), Block(self.wall_r))
-                e.placeBlock((x + w - 1, wy, z + dz), Block(self.wall_r))
+                buf.place(x,         wy, z + dz, Block(self.wall_r))
+                buf.place(x + w - 1, wy, z + dz, Block(self.wall_r))
             # Partition between porch and work area — leave 1-wide doorway at centre
             for dx in range(w):
                 wx = x + dx
                 if dx == 0 or dx == w - 1:
-                    e.placeBlock((wx, wy, work_z), Block(self.log))
+                    buf.place(wx, wy, work_z, Block(self.log))
                 elif not (wx == mid and dy <= 2):
-                    e.placeBlock((wx, wy, work_z), Block(self.wall_r))
+                    buf.place(wx, wy, work_z, Block(self.wall_r))
 
         # Back window
         if w >= 5:
-            e.placeBlock((x + w // 2, y + 2, z + d - 1), Block(self.window))
+            buf.place(x + w // 2, y + 2, z + d - 1, Block(self.window))
 
         # Gabled roof
         self._roof(x, y + wall_h + 1, z, w, d)
@@ -274,16 +278,16 @@ class _Builder:
         fy  = y + 1
         cx  = x + w // 2
         iz  = work_z + 1
-        e.placeBlock((cx,     fy, iz), Block("minecraft:blast_furnace",
-                               {"facing": "south", "lit": "true"}))
-        e.placeBlock((cx - 1, fy, iz), Block("minecraft:anvil", {"facing": "west"}))
-        e.placeBlock((x + 1,  fy, iz), Block("minecraft:barrel",
-                               {"facing": "up", "open": "false"}))
-        e.placeBlock((x + w - 2, fy, z + 1),
-                     Block("minecraft:grindstone", {"face": "floor", "facing": "north"}))
+        buf.place(cx,     fy, iz, Block("minecraft:blast_furnace",
+                                        {"facing": "south", "lit": "true"}))
+        buf.place(cx - 1, fy, iz, Block("minecraft:anvil", {"facing": "west"}))
+        buf.place(x + 1,  fy, iz, Block("minecraft:barrel",
+                                        {"facing": "up", "open": "false"}))
+        buf.place(x + w - 2, fy, z + 1,
+                  Block("minecraft:grindstone", {"face": "floor", "facing": "north"}))
         if w >= 6:
-            e.placeBlock((cx + 1, fy, iz),
-                         Block("minecraft:smoker", {"facing": "south", "lit": "false"}))
+            buf.place(cx + 1, fy, iz,
+                      Block("minecraft:smoker", {"facing": "south", "lit": "false"}))
 
     # ------------------------------------------------------------------
     # Chimney
@@ -303,21 +307,21 @@ class _Builder:
         _WORLD_MAX_Y   = 318   # 1 block clearance below hard ceiling
         _CHIMNEY_ABOVE = 10    # blocks above the taller roof peak
 
-        e          = self.e
-        roof_peak  = max(left_h, right_h) + max(d // 2, 4)
-        top_y      = min(y + roof_peak + _CHIMNEY_ABOVE, _WORLD_MAX_Y)
-        trans_y    = y + (top_y - y) * 2 // 3   # cobble → stone brick transition
+        buf       = self.buf
+        roof_peak = max(left_h, right_h) + max(d // 2, 4)
+        top_y     = min(y + roof_peak + _CHIMNEY_ABOVE, _WORLD_MAX_Y)
+        trans_y   = y + (top_y - y) * 2 // 3   # cobble → stone brick transition
 
         cz = z + d // 2
         for iy in range(y, top_y + 1):
             mat = self.cobble if iy <= trans_y else self.stone_br
-            e.placeBlock((cx, iy, cz),     Block(mat))
-            e.placeBlock((cx, iy, cz + 1), Block(mat))
+            buf.place(cx, iy, cz,     Block(mat))
+            buf.place(cx, iy, cz + 1, Block(mat))
 
         # Campfire on summit — only if there is room below the world ceiling
         if top_y + 1 <= _WORLD_MAX_Y:
-            e.placeBlock(
-                (cx, top_y + 1, cz),
+            buf.place(
+                cx, top_y + 1, cz,
                 Block("minecraft:campfire", {"lit": "true", "signal_fire": "false",
                                              "facing": "north"}),
             )
@@ -336,48 +340,44 @@ class _Builder:
         Oak log beam bridging the chimney column at the lower eave height,
         and a fence-gate section at ground level between the two wings.
         """
-        e      = self.e
+        buf    = self.buf
         beam_y = y + min(left_h, right_h) + 1
         gx     = x + left_w   # chimney column X
 
         # Connecting beam — two log blocks across the chimney column
-        e.placeBlock((gx, beam_y, z + 1), Block(self.log))
-        e.placeBlock((gx, beam_y, z + 2), Block(self.log))
+        buf.place(gx, beam_y, z + 1, Block(self.log))
+        buf.place(gx, beam_y, z + 2, Block(self.log))
 
         # Ground-level fence with gate in the gap between wings
         for dz in range(1, 4):
-            e.placeBlock((gx, y + 1, z + dz), Block(self.fence))
-        e.placeBlock((gx, y + 1, z + 2),
-                     Block("minecraft:oak_fence_gate",
-                           {"facing": "east", "open": "false", "in_wall": "false"}))
+            buf.place(gx, y + 1, z + dz, Block(self.fence))
+        buf.place(gx, y + 1, z + 2,
+                  Block("minecraft:oak_fence_gate",
+                        {"facing": "east", "open": "false", "in_wall": "false"}))
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
     def _layer(self, x, y, z, w, d, mat):
-        positions = [(x + dx, y, z + dz) for dx in range(w) for dz in range(d)]
-        self.e.placeBlock(positions, Block(mat))
+        blk = Block(mat)
+        for dx in range(w):
+            for dz in range(d):
+                self.buf.place(x + dx, y, z + dz, blk)
 
     def _door(self, door_x, y, face_z, facing):
-        self.e.placeBlock(
-            (door_x, y + 1, face_z),
+        self.buf.place(
+            door_x, y + 1, face_z,
             Block(self.door_mat, {"facing": facing, "half": "lower", "hinge": "left"}),
         )
-        self.e.placeBlock(
-            (door_x, y + 2, face_z),
+        self.buf.place(
+            door_x, y + 2, face_z,
             Block(self.door_mat, {"facing": facing, "half": "upper", "hinge": "left"}),
         )
 
     def _roof(self, x, y, z, w, d):
         """Gabled roof with 1-block overhang via the shared roof builder."""
-        class _Ctx:
-            def __init__(self, editor, palette):
-                self.editor  = editor
-                self.palette = palette
-            def place_block(self, pos, block):
-                self.editor.placeBlock(pos, block)
-
-        ctx = _Ctx(self.e, self.p)
+        from structures.base.build_context import BuildContext
+        ctx = BuildContext(self.buf, self.p)
         rc  = _RoofCorners(x, y, z, w, d, overhang=1)
         build_gabled_roof(ctx, rc)

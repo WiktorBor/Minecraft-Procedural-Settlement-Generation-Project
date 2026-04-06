@@ -37,6 +37,7 @@ from data.biome_palettes import get_biome_palette
 from data.settlement_entities import Plot
 from structures.house.house_grammar import HouseGrammar
 from structures.house.house_scorer import HouseParams
+from world_interface.structure_placer import StructurePlacer
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -58,8 +59,8 @@ SEED: int | None = 42
 OFFSET: tuple[int, int, int] = (5, 0, 5)
 
 # Plot size — change these to test different house footprints
-PLOT_WIDTH: int = 10
-PLOT_DEPTH: int = 10
+PLOT_WIDTH: int = 20
+PLOT_DEPTH: int = 7
 
 # Palette — try "medieval", "desert", "snowy", "savanna"
 PALETTE_NAME: str = "medieval"
@@ -190,20 +191,20 @@ def get_ground_y(editor: Editor, x: int, z: int, start_y: int) -> int:
     return start_y  # fallback
 
 
-def apply_force_params(grammar: HouseGrammar, plot: Plot, force: dict) -> None:
+def apply_force_params(grammar: HouseGrammar, force: dict) -> None:
     """
     Monkey-patch _make_context to inject forced parameters.
     Only the keys present in `force` are overridden.
     """
     original_make_context = grammar._make_context
 
-    def patched_make_context(p: Plot, rotation: int):
-        ctx = original_make_context(p, rotation)
+    def patched_make_context(x, y, z, w, d, rotation, force_bad=False):
+        ctx = original_make_context(x, y, z, w, d, rotation, force_bad)
         for key, val in force.items():
             if hasattr(ctx, key):
                 object.__setattr__(ctx, key, val)
             else:
-                logger.warning("FORCE_PARAMS key '%s' not found on _Ctx — ignored.", key)
+                logger.warning("FORCE_PARAMS key '%s' not found on Ctx — ignored.", key)
         return ctx
 
     grammar._make_context = patched_make_context
@@ -266,22 +267,19 @@ def main() -> None:
         logger.info("Area cleared.")
 
     # --- build the house ---
-    grammar = HouseGrammar(editor=editor, palette=palette)
+    grammar = HouseGrammar(None, palette=palette)
 
     if FORCE_PARAMS:
         logger.info("Applying forced parameters: %s", FORCE_PARAMS)
-        apply_force_params(grammar, plot, FORCE_PARAMS)
+        apply_force_params(grammar, FORCE_PARAMS)
 
     logger.info(
         "Building %dx%d house at (%d,%d,%d) rotation=%d palette=%s ...",
         PLOT_WIDTH, PLOT_DEPTH, hx, hy, hz, ROTATION, PALETTE_NAME,
     )
 
-    grammar.build(plot, rotation=ROTATION)
-    # grammar.build_test(plot, roof_type="cross", w=7, d=7)
-    # grammar.build_test(plot, roof_type="cross", w=5, d=9)
-    # grammar.build_test(plot, roof_type="gabled", w=6, d=8)
-    editor.flushBuffer()
+    buf = grammar.build(plot, rotation=ROTATION)
+    StructurePlacer(editor).place(buf)
     logger.info("Done — teleport to the house with: /tp %d %d %d", hx, hy + 5, hz - 5)
 
 

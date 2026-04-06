@@ -23,11 +23,11 @@ from __future__ import annotations
 import logging
 
 from gdpc import Block
-from gdpc.editor import Editor
 
 from data.biome_palettes import BiomePalette, palette_get
 from data.settlement_entities import Plot
 from structures.base.build_context import BuildContext
+from world_interface.block_buffer import BlockBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -83,13 +83,15 @@ class Dock:
 
     def build(
         self,
-        editor: Editor,
+        _editor,
         plot: Plot,
         palette: BiomePalette,
         rotation: int = 0,
-    ) -> None:
+    ) -> BlockBuffer:
         x, y, z = plot.x, plot.y, plot.z
         w, d    = plot.width, plot.depth
+
+        buffer = BlockBuffer()
 
         # Override palette with dock-specific materials
         dock_pal                    = dict(palette)
@@ -98,7 +100,7 @@ class Dock:
         dock_pal["accent"]          = "minecraft:cobblestone"
         dock_pal["light"]           = palette_get(palette, "light", "minecraft:lantern")
 
-        ctx = BuildContext(editor, dock_pal, rotation=rotation,
+        ctx = BuildContext(buffer, dock_pal, rotation=rotation,
                            origin=(x, y, z), size=(w, d))
 
         # --- Dimension split -------------------------------------------------
@@ -150,6 +152,8 @@ class Dock:
             ]
             for px, pz in corner_lights:
                 ctx.place_light((px, light_y, pz), key="light", hanging=False)
+
+        return buffer
 
     # ------------------------------------------------------------------
     # Private helpers

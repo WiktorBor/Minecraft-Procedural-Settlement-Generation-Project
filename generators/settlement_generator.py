@@ -8,9 +8,9 @@ import random
 import numpy as np
 from gdpc.editor import Editor
 
-from data.analysis_results import WorldAnalysisResult
-from data.biome_palettes import BiomePalette, get_biome_palette
-from data.configurations import SettlementConfig, TerrainConfig
+from analysis.world_analysis import WorldAnalyser
+from data.biome_palettes import BiomePalette
+from data.configurations import TerrainConfig, SettlementConfig
 from data.settlement_entities import Building, Plot, RoadCell
 from data.settlement_state import SettlementState
 from structures.misc.square_centre import SquareCentre
@@ -21,8 +21,10 @@ from planning.settlement_planner import SettlementPlanner
 from structures.base.structure_selector import StructureSelector
 from structures.decoration.district.district_marker import DistrictMarker
 from structures.fortification.fortification_builder import FortificationBuilder
+from world_interface.block_buffer import BlockBuffer
 from world_interface.road_placer import RoadBuilder
-from world_interface.terraforming import fill_depressions, level_plot_area, refresh_ground_heightmap
+from world_interface.structure_placer import StructurePlacer
+from world_interface.terraforming import fill_depressions, level_plot_area, recompute_all_maps
 
 logger = logging.getLogger(__name__)
 
@@ -35,96 +37,70 @@ class SettlementGenerator:
 
     def __init__(
         self,
-        editor: Editor,
-        analysis: WorldAnalysisResult,
+        editor:   Editor,
+        analyser: WorldAnalyser,
         settlement_config: SettlementConfig,
-        terrain_config: TerrainConfig,
-        palette: BiomePalette | None = None,
-        terrain_loader=None,
+        terrain_config:   TerrainConfig,
+        planner:  SettlementPlanner,
     ) -> None:
-        self.editor            = editor
-        self.analysis          = analysis
+        self.editor       = editor
+        self.analyser     = analyser
         self.settlement_config = settlement_config
         self.terrain_config    = terrain_config
-        self.palette           = palette
-        self.terrain_loader    = terrain_loader
-        self.planner           = SettlementPlanner(analysis, settlement_config)
+        self.planner      = planner
 
-    def generate(self, num_buildings: int | None = None) -> SettlementState:
-        """
-        Run the full settlement generation pipeline.
-
-        Args:
-            num_buildings: If set, cap the number of plots built (useful for
-                           testing). Plots are taken in planning order.
-
-        Returns:
-            SettlementState populated with districts, roads, plots, and buildings.
-        """
+    def generate(self) -> SettlementState:
+        """Run the full settlement generation pipeline."""
         logger.info("=" * 50)
         logger.info("SETTLEMENT GENERATOR")
         logger.info("=" * 50)
 
-        default_palette = self.palette if self.palette is not None else get_biome_palette()
+        # --- Phase 1: World analysis + terrain fill ---
+        logger.info("[Phase 1] Analysing world...")
+        analysis = self.analyser.prepare()
+        logger.info("  ✓ World analysis complete. Best area: %s", analysis.best_area)
 
-        if self.analysis.water_distances is None:
-            from scipy.ndimage import distance_transform_edt
-            self.analysis.water_distances = distance_transform_edt(
-                ~self.analysis.water_mask.astype(bool)).astype(np.float32)
-
-        # --- Phase 1: Terrain fill ---
         logger.info("[Phase 1] Filling terrain holes...")
-        fill_depressions(editor=self.editor, analysis=self.analysis)
+        fill_depressions(editor=self.editor, analysis=analysis, config=self.terrain_config)
         self.editor.flushBuffer()
-        if self.terrain_loader is not None:
-            refresh_ground_heightmap(self.terrain_loader, self.analysis)
-        logger.info("  ✓ Heightmap refreshed.")
-        logger.info("  ✓ Holes filled.")
+        recompute_all_maps(
+            self.editor, analysis, self.terrain_config,
+            terrain_loader=self.analyser.fetcher.terrain,
+        )
+        logger.info("  ✓ Terrain prepared.")
 
-        # --- Phase 2: District planning ---
+        # --- Phase 2: District planning + palettes ---
         logger.info("[Phase 2] District planning...")
-        state = self.planner.plan_districts()
+        state = self.planner.plan_districts(analysis)
+        state.init_occupancy(analysis.best_area)
         logger.info("  ✓ %d districts ready.", len(state.districts.district_list))
 
-        # Generate per-district palettes from world biomes
-        district_palettes = PaletteSystem().generate(self.analysis, state.districts)
+        district_palettes = PaletteSystem().generate(analysis, state.districts)
+        default_palette   = next(iter(district_palettes.values()))
         logger.info("  ✓ Per-district palettes generated.")
 
-        # --- Phase 3a: Placing districts fountains... ---
-        district_marker = DistrictMarker(
-            editor=self.editor,
-            analysis=self.analysis,
-            palette=default_palette
-        )
-        logger.info("[Phase 3a] Placing district fountains...")
-        fountain_cells = district_marker.build(state.districts)
-        state.add_taken(fountain_cells)
+        master_buffer = BlockBuffer()
 
-        # --- Phase 3a.5: Central plaza ---
-        # Plaza center and radius were pre-computed in plan_districts() so that
-        # the district planner could exclude the plaza area from district assignment.
+        # --- Phase 3a: Central plaza ---
         plaza_radius = state.plaza_radius
-
         if plaza_radius > 0:
             cx, cz = state.plaza_center
             logger.info(
-                "[Phase 3a.5] Placing %s plaza (radius=%d) at (%d, %d)...",
+                "[Phase 3a] Placing %s plaza (radius=%d) at (%d, %d)...",
                 "big" if plaza_radius >= 8 else "small", plaza_radius, cx, cz,
             )
-            area   = self.analysis.best_area
+            area   = analysis.best_area
             li, lj = area.world_to_index(cx, cz)
-            cy     = int(self.analysis.heightmap_ground[li, lj])
+            cy     = int(analysis.heightmap_ground[li, lj])
 
             plaza_plot = Plot(
                 x=cx - plaza_radius, z=cz - plaza_radius,
                 width=plaza_radius * 2, depth=plaza_radius * 2, y=cy,
             )
-            SquareCentre().build(self.editor, plaza_plot, palette=default_palette)
-            logger.info("  ✓ Plaza structure placed at (%d, %d).", cx, cz)
+            plaza_buf = SquareCentre().build(self.editor, plaza_plot, palette=default_palette)
+            if plaza_buf is not None:
+                master_buffer.merge(plaza_buf)
 
-            # Block everything from the plaza centre out to the ring road
-            # centre-line so no plot can squeeze into the gap between the
-            # plaza circle and the ring road.
             road_width  = self.settlement_config.road_width
             ring_radius = plaza_radius + road_width + 1
             excl_sq     = ring_radius ** 2
@@ -136,56 +112,50 @@ class SettlementGenerator:
             }
             state.add_taken(plaza_taken)
 
-            # Circular ring road around the plaza
-            ring_cells = self._generate_ring_road(cx, cz, plaza_radius)
+            ring_cells = self._generate_ring_road(cx, cz, plaza_radius, analysis, road_width)
             state.add_road_cells(ring_cells)
-            logger.info("  ✓ Ring road generated (%d cells).", len(ring_cells))
+            logger.info("  ✓ Plaza + ring road placed (%d cells).", len(ring_cells))
 
-        # --- Phase 3a.6: Central landmark tower ---
-        tower_taken = self._place_central_tower(state, default_palette)
+        # --- Phase 3b: District markers (fountains / docks) ---
+        logger.info("[Phase 3b] Placing district markers...")
+        district_marker = DistrictMarker(
+            analysis=analysis,
+            palette=default_palette,
+        )
+        marker_buffer, fountain_cells = district_marker.build(state.districts)
+        master_buffer.merge(marker_buffer)
+        state.add_taken(fountain_cells)
+
+        # --- Phase 3c: Central landmark tower ---
+        tower_buf, tower_taken = self._place_central_tower(state, default_palette, analysis)
+        if tower_buf is not None:
+            master_buffer.merge(tower_buf)
         if tower_taken:
             state.add_taken(tower_taken)
 
-        # --- Phase 3b: Road planning ---
-        self.planner.plan_roads(state)
+        # --- Phase 3d: Road planning + placement ---
+        logger.info("[Phase 3d] Planning roads...")
+        self.planner.plan_roads(analysis, state)
         road_builder = RoadBuilder(
-            editor=self.editor,
-            analysis=self.analysis,
-            palette=default_palette
+            analysis=analysis,
+            palette=default_palette,
         )
-        road_builder.build(state.roads)
-        logger.info(
-            "  ✓ %d road cells ready.",
-            state.road_cell_count
-        )
+        road_buf = road_builder.build(state.roads)
+        master_buffer.merge(road_buf)
+        logger.info("  ✓ %d road cells placed.", state.road_cell_count)
 
-        # --- Phase 3c: Plot planning ---
-        self.planner.plan_plots(state)
-        logger.info(
-            "  ✓ %d plot cells ready.",
-            state.plot_count,
-        )
-
-        # Phase 3d: Perimeter levelling disabled.
+        # --- Phase 3e: Plot planning ---
+        logger.info("[Phase 3e] Planning plots...")
+        self.planner.plan_plots(analysis, state)
+        logger.info("  ✓ %d plots ready.", state.plot_count)
 
         # --- Phase 4: Structure placement ---
-        logger.info("[Phase 4] Structure generation...")
+        logger.info("[Phase 4] Placing structures...")
+        has_water = any(dtype == "fishing" for dtype in state.districts.types.values())
 
-        plots_to_build = state.plots
-        if num_buildings is not None:
-            plots_to_build = plots_to_build[:num_buildings]
-
-        # Determine if water is accessible (any fishing district exists)
-        has_water = any(
-            dtype == "fishing"
-            for dtype in state.districts.types.values()
-        )
-
-        # One StructureSelector per district, each carrying its own palette
         selectors: dict[int, StructureSelector] = {
             idx: StructureSelector(
-                editor=self.editor,
-                analysis=self.analysis,
+                analysis=analysis,
                 config=self.settlement_config,
                 palette=pal,
                 has_water=has_water,
@@ -193,48 +163,68 @@ class SettlementGenerator:
             for idx, pal in district_palettes.items()
         }
         _fallback_selector = next(iter(selectors.values()))
+        area = analysis.best_area
 
-        area = self.analysis.best_area
-
-        for idx, plot in enumerate(plots_to_build, 1):
-            # Resolve the district this plot sits in for palette + selector lookup
+        for idx, plot in enumerate(state.plots, 1):
+            # Try to resolve district from the plot centre (more reliable than
+            # the corner which may land on a road or border cell).
+            pcx = plot.x + plot.width  // 2
+            pcz = plot.z + plot.depth  // 2
             try:
-                li, lj      = area.world_to_index(plot.x, plot.z)
+                li, lj       = area.world_to_index(pcx, pcz)
                 district_idx = int(state.districts.map[li, lj])
             except (ValueError, IndexError):
                 district_idx = -1
+
+            # If map lookup still gave nothing, fall back to the type stored on
+            # the plot at planning time.
+            if district_idx not in selectors:
+                dtype = (plot.type or "residential").strip().lower()
+                district_idx = next(
+                    (k for k, v in state.districts.types.items() if v == dtype),
+                    -1,
+                )
+
+            dtype = state.districts.types.get(district_idx, plot.type or "?")
+
             logger.info(
                 "  Plot %d/%d: district=%s  size=%dx%d  y=%d  facing=%s",
-                idx, len(plots_to_build),
-                state.districts.types.get(district_idx, "?"),
+                idx, len(state.plots),
+                dtype,
                 plot.width, plot.depth, plot.y, plot.facing,
             )
+
             selector     = selectors.get(district_idx, _fallback_selector)
             template_key = selector.select(plot)
 
             if template_key is None:
                 logger.warning(
                     "  No template for plot %d/%d at (%d, %d) — skipping.",
-                    idx, len(plots_to_build), plot.x, plot.z,
+                    idx, len(state.plots), plot.x, plot.z,
                 )
                 continue
 
             logger.info(
                 "  Building %d/%d: %s at (%d, %d).",
-                idx, len(plots_to_build), template_key, plot.x, plot.z,
+                idx, len(state.plots), template_key, plot.x, plot.z,
             )
 
-            # Clear trees and level terrain before placing the structure
-            level_plot_area(self.editor, self.analysis, plot)
-
-            selector.build(plot, template_key)
-
-            # Mark the footprint as taken so connector paths route around it
-            state.add_taken({
-                (plot.x + dx, plot.z + dz)
-                for dx in range(plot.width)
-                for dz in range(plot.depth)
-            })
+            level_plot_area(self.editor, analysis, plot)
+            buf = selector.build(plot, template_key)
+            if buf is None:
+                logger.warning(
+                    "  Builder '%s' failed at (%d,%d) size=%dx%d facing=%s "
+                    "— check ERROR logs from structures.base.structure_selector.",
+                    template_key, plot.x, plot.z,
+                    plot.width, plot.depth, plot.facing,
+                )
+            elif len(buf) == 0:
+                logger.warning(
+                    "  Builder '%s' returned empty buffer at (%d,%d) — skipping.",
+                    template_key, plot.x, plot.z,
+                )
+            else:
+                master_buffer.merge(buf)
 
             state.add_building(Building(
                 x=plot.x, z=plot.z,
@@ -243,32 +233,30 @@ class SettlementGenerator:
                 facing=plot.facing,
             ))
 
-        logger.info("  ✓ %d buildings generated.", state.building_count)
+        logger.info("  ✓ %d buildings placed.", state.building_count)
 
-        # --- Phase 5: Building connectors ---
-        # For each placed building, run A* from the nearest road cell to the
-        # building's front door and place a path using the same road block.
-        logger.info("[Phase 5] Placing building connector paths...")
-        connector_cells = self._build_connectors(state)
+        # --- Phase 5: Connector paths ---
+        logger.info("[Phase 5] Placing connector paths...")
+        connector_cells = self._build_connectors(state, analysis)
         if connector_cells:
-            road_builder.build(connector_cells)
+            connector_buf = road_builder.build(connector_cells)
+            master_buffer.merge(connector_buf)
             state.add_road_cells(connector_cells)
         logger.info("  ✓ %d connector cells placed.", len(connector_cells))
 
         # --- Phase 6: Fortification ---
         logger.info("[Phase 6] Building fortification...")
-        fortification = FortificationBuilder(
-            editor=self.editor,
-            analysis=self.analysis,
+        fort_buf = FortificationBuilder(
+            analysis=analysis,
             palette=default_palette,
             config=self.settlement_config,
-        )
-        fortification.build()
+        ).build(state.buildings)
+        master_buffer.merge(fort_buf)
         logger.info("  ✓ Fortification placed.")
 
-        # --- Phase 7: Flush ---
+        # --- Phase 7: Flush via StructurePlacer ---
         logger.info("[Phase 7] Flushing blocks to Minecraft...")
-        self.editor.flushBuffer()
+        StructurePlacer(self.editor).place(master_buffer)
         logger.info("  ✓ All blocks placed.")
 
         return state
@@ -277,6 +265,7 @@ class SettlementGenerator:
         self,
         state: SettlementState,
         palette: BiomePalette,
+        analysis,
     ) -> set[tuple[int, int]] | None:
         """
         Optionally place one landmark tower somewhere near the settlement centre.
@@ -309,7 +298,7 @@ class SettlementGenerator:
         roll = random.random()
         if roll < 0.25:
             logger.info("[Phase 3a.6] No central tower this run (25%% chance).")
-            return None
+            return None, None
         elif roll < 0.65:
             tower_type = "spire"
             min_w, min_d = 10, 6
@@ -317,8 +306,8 @@ class SettlementGenerator:
             tower_type = "clock"
             min_w, min_d = 8, 8
 
-        area = self.analysis.best_area
-        hmap = self.analysis.heightmap_ground
+        area = analysis.best_area
+        hmap = analysis.heightmap_ground
 
         # best_area centroid in world coords
         cent_x = (area.x_from + area.x_to) // 2
@@ -328,13 +317,11 @@ class SettlementGenerator:
         median_y = int(np.median(hmap))
 
         # --- Candidate search: ring of radii 8–25 around centroid ---
-        taken = state.taken
-
         def _footprint_clear(wx: int, wz: int, fw: int, fd: int) -> bool:
-            """True if no taken cell overlaps the footprint + 2-block buffer."""
+            """True if no occupied cell overlaps the footprint + 2-block buffer."""
             for dx in range(-2, fw + 2):
                 for dz in range(-2, fd + 2):
-                    if (wx + dx, wz + dz) in taken:
+                    if (wx + dx, wz + dz) in state.occupancy:
                         return False
             return True
 
@@ -386,7 +373,7 @@ class SettlementGenerator:
                 best_pos = (cent_x, cent_z)
             else:
                 logger.info("[Phase 3a.6] No clear position for central tower — skipping.")
-                return None
+                return None, None
 
         wx, wz = best_pos
         li     = wx - area.x_from
@@ -404,29 +391,31 @@ class SettlementGenerator:
         try:
             if tower_type == "spire":
                 from structures.misc.spire_tower import SpireTower
-                SpireTower().build(self.editor, plot, palette, analysis=self.analysis)
+                tower_buf = SpireTower().build(self.editor, plot, palette, analysis=analysis)
             else:
                 from structures.misc.clock_tower import ClockTower
-                ClockTower().build(self.editor, plot, palette)
+                tower_buf = ClockTower().build(self.editor, plot, palette)
         except Exception:
             logger.error(
                 "[Phase 3a.6] Central tower builder failed at (%d, %d).",
                 wx, wz, exc_info=True,
             )
-            return None
+            return None, None
 
-        # Return footprint cells so the planner won't place plots on top
-        return {
+        footprint = {
             (wx + dx, wz + dz)
             for dx in range(min_w)
             for dz in range(min_d)
         }
+        return tower_buf, footprint
 
     def _generate_ring_road(
         self,
         cx: int,
         cz: int,
         plaza_radius: int,
+        analysis,
+        road_width: int = None,
     ) -> list[RoadCell]:
         """
         Return RoadCells forming a circular ring around the plaza.
@@ -434,13 +423,12 @@ class SettlementGenerator:
         The ring centre-line sits at plaza_radius + road_width + 1 from (cx, cz),
         with thickness equal to road_width so it matches the rest of the network.
         """
-        road_width  = self.settlement_config.road_width
         ring_radius = plaza_radius + road_width + 1
         half        = road_width // 2
         inner_sq    = (ring_radius - half) ** 2
         outer_sq    = (ring_radius + half) ** 2
 
-        area  = self.analysis.best_area
+        area  = analysis.best_area
         cells: set[tuple[int, int]] = set()
 
         for dx in range(-(ring_radius + half + 1), ring_radius + half + 2):
@@ -453,7 +441,7 @@ class SettlementGenerator:
 
         return [RoadCell(wx, wz, type="main_road") for wx, wz in cells]
 
-    def _build_connectors(self, state: SettlementState) -> list[RoadCell]:
+    def _build_connectors(self, state: SettlementState, analysis) -> list[RoadCell]:
         """
         For each placed building, A*-path from the nearest road cell to the
         building's front door and return those cells as RoadCell objects.
@@ -463,9 +451,9 @@ class SettlementGenerator:
         """
         from utils.path_utils import expand_path_to_width
 
-        area      = self.analysis.best_area
-        heightmap = self.analysis.heightmap_ground
-        water     = self.analysis.water_mask.astype(bool)
+        area      = analysis.best_area
+        heightmap = analysis.heightmap_ground
+        water     = analysis.water_mask.astype(bool)
 
         if not state._road_coords:
             return []
@@ -481,12 +469,12 @@ class SettlementGenerator:
             except ValueError:
                 pass
 
-        # Also block all taken cells (tower, plaza, fountains, dock) so
+        # Also block all occupied cells (tower, plaza, fountains, dock, plots) so
         # connector paths never route through structures placed outside
         # the normal plot/building pipeline.
-        for wx, wz in state.taken:
+        for wx, wz in state.occupancy:
             if (wx, wz) in state._road_coords:
-                continue  # roads are in taken too — keep them walkable
+                continue  # roads are occupied too — keep them walkable
             try:
                 li, lj = area.world_to_index(wx, wz)
                 building_mask[li, lj] = True
@@ -508,19 +496,32 @@ class SettlementGenerator:
         all_connectors: list[RoadCell] = []
         already_placed: set[tuple[int, int]] = set()
 
+        no_path_count    = 0
+        already_on_road  = 0
+
         for building in state.buildings:
             # Use the building's actual door position (derived from facing).
             door_wx, door_wz = building.front_door()
+
+            # If the door cell is already a road cell no connector is needed.
+            if (door_wx, door_wz) in state._road_coords:
+                already_on_road += 1
+                continue
 
             # Find the nearest road cell to the door (not the building centre).
             nearest_rx, nearest_rz = min(
                 state._road_coords,
                 key=lambda r: abs(r[0] - door_wx) + abs(r[1] - door_wz),
             )
+            nearest_dist = abs(nearest_rx - door_wx) + abs(nearest_rz - door_wz)
 
             try:
                 door_li, door_lj = area.world_to_index(door_wx, door_wz)
             except ValueError:
+                logger.debug(
+                    "  Door (%d,%d) of building at (%d,%d) outside area — skipping.",
+                    door_wx, door_wz, building.x, building.z,
+                )
                 continue
 
             door_li = int(np.clip(door_li, 0, walkable.shape[0] - 1))
@@ -544,9 +545,12 @@ class SettlementGenerator:
             )
 
             if path is None:
-                logger.debug(
-                    "  No connector path to building at (%d, %d).",
-                    building.x, building.z,
+                no_path_count += 1
+                logger.warning(
+                    "  No connector path: building(%s) at (%d,%d) facing=%s "
+                    "door=(%d,%d) nearest_road=(%d,%d) dist=%d.",
+                    building.type, building.x, building.z, building.facing,
+                    door_wx, door_wz, nearest_rx, nearest_rz, nearest_dist,
                 )
                 continue
 
@@ -572,7 +576,9 @@ class SettlementGenerator:
                     already_placed.add((wx, wz))
 
         logger.info(
-            "_build_connectors: %d connector cells for %d buildings.",
+            "_build_connectors: %d connector cells for %d buildings "
+            "(%d already on road, %d no path found).",
             len(all_connectors), len(state.buildings),
+            already_on_road, no_path_count,
         )
         return all_connectors

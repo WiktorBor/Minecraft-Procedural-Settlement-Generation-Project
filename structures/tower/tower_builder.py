@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 from gdpc import Block
-from gdpc.editor import Editor
 
 from data.biome_palettes import BiomePalette, palette_get
 from structures.base.build_context import BuildContext
+from world_interface.block_buffer import BlockBuffer
 from structures.base.primitives import (
     add_door,
     add_windows,
@@ -39,7 +39,7 @@ class TowerBuilder:
 
     def __init__(
         self,
-        editor: Editor,
+        _editor,
         palette: BiomePalette,
         height: int = 8,
         width: int = 5,
@@ -47,7 +47,6 @@ class TowerBuilder:
         with_windows: bool = False,
         rotation: int = 0,
     ) -> None:
-        self.editor       = editor
         self.palette      = palette
         self.height       = height
         self.width        = width
@@ -55,9 +54,11 @@ class TowerBuilder:
         self.with_windows = with_windows
         self.rotation     = rotation
 
-    def build_at(self, x: int, y: int, z: int) -> None:
+    def build_at(self, x: int, y: int, z: int) -> BlockBuffer:
         """Place the tower with its bottom-left corner at (x, y, z)."""
         w, h = self.width, self.height
+
+        buffer = BlockBuffer()
 
         # Plank material from the original palette (before stone override)
         plank_mat = palette_get(self.palette, "wall", "minecraft:dark_oak_planks")
@@ -72,7 +73,7 @@ class TowerBuilder:
         stone_pal["accent_beam"]    = "minecraft:stripped_dark_oak_log"
         stone_pal["interior_light"] = "minecraft:lantern"
 
-        ctx = BuildContext(self.editor, stone_pal, rotation=self.rotation,
+        ctx = BuildContext(buffer, stone_pal, rotation=self.rotation,
                            origin=(x, y, z), size=(w, w))
 
         # Height milestones (same convention as Tower / SpireTower)
@@ -110,3 +111,5 @@ class TowerBuilder:
             )
 
             _build_steep_spire(ctx, x, spire_y, z, w, w)
+
+        return buffer

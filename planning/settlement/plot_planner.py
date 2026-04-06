@@ -9,6 +9,7 @@ import numpy as np
 from data.analysis_results import WorldAnalysisResult
 from data.configurations import SettlementConfig
 from data.settlement_entities import Plot
+from data.settlement_state import OccupancyMap
 from utils.poisson_disk import poisson_disk
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ class PlotPlanner:
         self,
         analysis: WorldAnalysisResult,
         districts,
-        taken: set[tuple[int, int]],
+        occupancy: OccupancyMap,
         config: SettlementConfig,
         road_coords: set[tuple[int, int]] | None = None,
     ) -> None:
@@ -32,19 +33,7 @@ class PlotPlanner:
         self.districts   = districts
         self.config      = config
         self.road_coords = road_coords or set()
-
-        # Pre-build a boolean grid of taken cells in local index space so that
-        # overlap checks in _valid() are a single numpy slice rather than an
-        # O(plot_w × plot_d) Python loop.
-        shape = analysis.heightmap_ground.shape
-        self._taken_mask: np.ndarray = np.zeros(shape, dtype=bool)
-        _area = analysis.best_area
-        for wx, wz in taken:
-            try:
-                li, lj = _area.world_to_index(wx, wz)
-                self._taken_mask[li, lj] = True
-            except ValueError:
-                pass  # cell outside best_area — ignore
+        self.occupancy   = occupancy
 
     # ------------------------------------------------------------------
     # Orientation helpers
@@ -87,6 +76,7 @@ class PlotPlanner:
         local_z: int,
         plot_w: int,
         plot_d: int,
+        dtype: str = "residential",
     ) -> bool:
         """
         Validate a plot rectangle using vectorised array slicing.
@@ -106,16 +96,29 @@ class PlotPlanner:
         roughness = self.analysis.roughness_map  [local_x:x_end, local_z:z_end]
         water_d   = self.analysis.water_distances[local_x:x_end, local_z:z_end]
         heights   = self.analysis.heightmap_ground[local_x:x_end, local_z:z_end]
+        water_mask = self.analysis.water_mask    [local_x:x_end, local_z:z_end]
 
         if slope.max() > self.config.max_slope:
             return False
         if roughness.max() > self.config.max_roughness:
             return False
-        if water_d.min() < self.config.min_water_distance:
+
+        # Reject any plot where the footprint contains actual water cells.
+        if water_mask.any():
             return False
+
+        # Fishing districts may sit close to water; all others need a buffer.
+        min_water = (
+            self.config.min_water_distance
+            if dtype == "fishing"
+            else max(self.config.min_water_distance, 3)
+        )
+        if water_d.min() < min_water:
+            return False
+
         if heights.max() - heights.min() > self.config.max_height_variation:
             return False
-        if self._taken_mask[local_x:x_end, local_z:z_end].any():
+        if self.occupancy.blocked(local_x, local_z, plot_w, plot_d):
             return False
 
         return True
@@ -199,7 +202,7 @@ class PlotPlanner:
                     continue
                 if dist_slice.mean() < 0.5:
                     continue
-                if not self._valid(local_x, local_z, plot_w, plot_d):
+                if not self._valid(local_x, local_z, plot_w, plot_d, dtype):
                     continue
 
                 cx = local_x + plot_w // 2
@@ -216,9 +219,8 @@ class PlotPlanner:
                         if np.random.random() < 0.6:
                             continue
 
-                # Mark footprint + buffer as occupied.
-                # grammar_max accounts for the worst-case dimension the house
-                # grammar can snap to, preventing structure overlap in the world.
+                # Mark padded footprint in the local spacing grid so subsequent
+                # plots in this run keep aesthetic distance from each other.
                 grammar_max = 11
                 effective_w = max(plot_w, grammar_max)
                 effective_d = max(plot_d, grammar_max)
@@ -232,13 +234,22 @@ class PlotPlanner:
 
                 wx, wz = self.analysis.best_area.index_to_world(local_x, local_z)
 
-                # Use the maximum height across the plot footprint as the base Y.
-                # Builders fill downward from this height to meet lower terrain cells.
+                # Register the actual plot footprint in the global occupancy map
+                # so later phases (connectors, other planners) see it immediately.
+                self.occupancy.add(
+                    (wx + dx, wz + dz)
+                    for dx in range(plot_w)
+                    for dz in range(plot_d)
+                )
+
+                # Use the minimum height across the plot footprint as the base Y.
+                # level_plot_area will dig higher cells down to this level, so
+                # buildings sit at the lowest corner with no dirt fill needed.
                 plot_y = int(
                     self.analysis.heightmap_ground[
                         local_x:local_x + plot_w,
                         local_z:local_z + plot_d,
-                    ].max()
+                    ].min()
                 )
 
                 facing = self._facing_toward_road(wx, wz, plot_w, plot_d)

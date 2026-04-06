@@ -2,19 +2,17 @@
 structures/misc/market_stall.py
 ---------------------------------
 Self-adjusting market stall with coloured wool canopy.
-
-Uses direct editor calls (no rotation needed — symmetric structure).
 """
 from __future__ import annotations
 
 import random
 
-import gdpc.geometry as geo
 from gdpc import Block
-from gdpc.editor import Editor
 
 from data.biome_palettes import BiomePalette, palette_get
 from data.settlement_entities import Plot
+from structures.base.geometry import fill_cuboid
+from world_interface.block_buffer import BlockBuffer
 
 
 class MarketStall:
@@ -28,13 +26,18 @@ class MarketStall:
 
     def build(
         self,
-        editor: Editor,
+        _editor,
         plot: Plot,
         palette: BiomePalette,
         rotation: int = 0,
-    ) -> None:
-        x, y, z = plot.x, plot.y - 1, plot.z
+    ) -> BlockBuffer:
+        # Centre on the plot; extend half the plot size in each direction
+        cx = plot.x + plot.width  // 2
+        cz = plot.z + plot.depth  // 2
+        x, y, z = cx, plot.y - 1, cz
         w, d    = plot.width, plot.depth
+
+        buffer = BlockBuffer()
 
         color = random.choice(self.CANOPY_COLORS)
         wool  = f"minecraft:{color}_wool"
@@ -45,18 +48,16 @@ class MarketStall:
         pz = max(1, d // 2)
 
         # Foundation — solid block fill 4 blocks below the stall footprint
-        geo.placeCuboid(
-            editor,
-            (x - px, y - 4, z - pz), (x + px, y - 1, z + pz),
-            Block(found),
-        )
+        fill_cuboid(buffer, x - px, y - 4, z - pz, x + px, y - 1, z + pz, Block(found))
 
         # Fence posts (front two corners only — back is against a wall typically)
         for iy in range(y + 1, y + 4):
-            editor.placeBlock((x - px, iy, z - pz), Block(fence))
-            editor.placeBlock((x + px, iy, z - pz), Block(fence))
+            buffer.place(x - px, iy, z - pz, Block(fence))
+            buffer.place(x + px, iy, z - pz, Block(fence))
 
         # Wool canopy
         for ix in range(x - px, x + px + 1):
             for iz in range(z - pz, z + pz + 1):
-                editor.placeBlock((ix, y + 4, iz), Block(wool))
+                buffer.place(ix, y + 4, iz, Block(wool))
+
+        return buffer
