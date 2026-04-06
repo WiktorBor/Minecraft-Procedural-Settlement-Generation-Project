@@ -66,39 +66,39 @@ def _build_registry(analysis: WorldAnalysisResult | None = None) -> dict[str, tu
 
     def blacksmith(ed, pl, pal):
         from structures.misc.blacksmith import Blacksmith
-        return Blacksmith().build(ed, pl, pal, rotation=_rotation(pl))
+        return Blacksmith().build(pl, pal, rotation=_rotation(pl))
 
     def dock(ed, pl, pal):
         from structures.misc.dock import Dock
-        return Dock().build(ed, pl, pal, rotation=_rotation(pl))
+        return Dock().build(pl, pal, rotation=_rotation(pl))
 
     def market_stall(ed, pl, pal):
         from structures.misc.market_stall import MarketStall
-        return MarketStall().build(ed, pl, pal, rotation=_rotation(pl))
+        return MarketStall().build(pl, pal, rotation=_rotation(pl))
 
     def clock_tower(ed, pl, pal):
         from structures.misc.clock_tower import ClockTower
-        return ClockTower().build(ed, pl, pal, rotation=_rotation(pl))
+        return ClockTower().build(pl, pal, rotation=_rotation(pl))
 
     def tavern(ed, pl, pal):
         from structures.misc.tavern import Tavern
-        return Tavern().build(ed, pl, pal, rotation=_rotation(pl))
+        return Tavern().build(pl, pal, rotation=_rotation(pl))
 
     def tower(ed, pl, pal):
         from structures.tower.tower import Tower
         return Tower().build(ed, pl, pal, rotation=_rotation(pl))
 
-    def spire_tower(ed, pl, pal):
+    def spire_tower(_ed, pl, pal):
         from structures.misc.spire_tower import SpireTower
-        return SpireTower().build(ed, pl, pal, rotation=_rotation(pl), analysis=analysis)
+        return SpireTower().build(pl, pal, rotation=_rotation(pl), analysis=analysis)
 
-    def fortification(ed, pl, pal):
+    def fortification(_ed, pl, pal):
         from structures.misc.fortification import Fortification
-        return Fortification().build(ed, pl, pal)
+        return Fortification().build(pl, pal)
 
-    def plaza(ed, pl, pal):
+    def plaza(_ed, pl, pal):
         from structures.misc.square_centre import SquareCentre
-        return SquareCentre().build(ed, pl, pal)
+        return SquareCentre().build(pl, pal)
 
     def farm(_, pl, pal):
         from structures.farm.farm import Farm
