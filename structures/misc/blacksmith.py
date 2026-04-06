@@ -42,8 +42,6 @@ Wing details
 """
 from __future__ import annotations
 
-import random
-
 from gdpc import Block
 
 from data.biome_palettes import BiomePalette, palette_get
@@ -66,7 +64,6 @@ class Blacksmith:
 
     def build(
         self,
-        _editor,
         plot: Plot,
         palette: BiomePalette,
         rotation: int = 0,

@@ -66,7 +66,6 @@ class FortificationBuilder:
         cfg       = self.config
 
         tw = cfg.tower_width
-        th = cfg.tower_height
         wh = cfg.wall_height
         wt = cfg.wall_thickness
         gw = getattr(cfg, "gate_width", 4)
@@ -140,15 +139,24 @@ class FortificationBuilder:
         logger.info("Fortification: uniform_base_y=%d  wall_top_y=%d  (from %d columns)",
                      uniform_base_y, wall_top_y, len(all_gy))
 
-        # Corner towers — body runs from local ground up to uniform_base_y so
-        # all towers reach the same wall-top level regardless of terrain height.
+        # Corner towers — stone body extends 2 blocks above wall_top_y so towers
+        # are always visually taller than the connecting walls.
+        # Foundation fill mirrors the wall logic (_FOUND_DEPTH blocks below ground).
         for cx, cz in corners:
             corner_ground_y = self._sample_ground_y(cx, cz, area, heightmap)
-            body_h = max(th, uniform_base_y - corner_ground_y)
+            body_h = wall_top_y + 2 - corner_ground_y
             tower_buf = TowerBuilder(
                 None, self.palette, height=body_h, width=tw,
             ).build_at(cx, corner_ground_y, cz)
             buffer.merge(tower_buf)
+
+            # Extend foundation below each column of the tower footprint so the
+            # body connects to the ground even on uneven terrain outside best_area.
+            for dx in range(tw):
+                for dz in range(tw):
+                    for dy in range(1, _FOUND_DEPTH + 1):
+                        buffer.place(cx + dx, corner_ground_y - dy, cz + dz,
+                                     Block(found_block))
 
         # Wall segments — all share the same wall_top_y
         for (side, has_gate), (sx, sz, ex, ez) in zip(wall_sides, wall_midlines):

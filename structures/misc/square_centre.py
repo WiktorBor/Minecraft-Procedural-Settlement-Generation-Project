@@ -26,7 +26,6 @@ class SquareCentre:
 
     def build(
         self,
-        _editor,
         plot: Plot,
         palette: BiomePalette | None = None,
         rotation: int = 0,

@@ -85,7 +85,7 @@ class Bridge:
         span_size : spacing between pier columns.
         min_y     : lowest Y the pier may descend to.
         """
-        buf = BlockBuffer()
+        buffer = BlockBuffer()
 
         deck_id  = palette_get(palette, "foundation", "minecraft:stone_bricks")
         pier_id  = palette_get(palette, "foundation", "minecraft:stone_bricks")
@@ -97,23 +97,23 @@ class Bridge:
 
             # --- Deck surface ---
             for dz in range(-width, width + 1):
-                buf.place(x, y_level, start_z + dz, Block(deck_id))
+                buffer.place(x, y_level, start_z + dz, Block(deck_id))
 
             # --- Railings (one above deck, both Z edges) ---
-            buf.place(x, y_level + 1, start_z - width, Block(rail_id))
-            buf.place(x, y_level + 1, start_z + width, Block(rail_id))
+            buffer.place(x, y_level + 1, start_z - width, Block(rail_id))
+            buffer.place(x, y_level + 1, start_z + width, Block(rail_id))
 
             # --- Substructure: pier or arch ---
             if i % span_size == 0:
-                self._build_pier(buf, x, start_z, y_level, width, min_y, pier_id)
+                self._build_pier(buffer, x, start_z, y_level, width, min_y, pier_id)
             else:
-                self._build_arch(buf, x, start_z, y_level, i, span_size, arch_id)
+                self._build_arch(buffer, x, start_z, y_level, i, span_size, arch_id)
 
         logger.debug(
             "Bridge built: start=(%d,%d,%d) length=%d width=%d span=%d",
             start_x, y_level, start_z, length, width, span_size,
         )
-        return buf
+        return buffer
 
     # ------------------------------------------------------------------
     # Pier

@@ -97,7 +97,7 @@ class SettlementGenerator:
                 x=cx - plaza_radius, z=cz - plaza_radius,
                 width=plaza_radius * 2, depth=plaza_radius * 2, y=cy,
             )
-            plaza_buf = SquareCentre().build(self.editor, plaza_plot, palette=default_palette)
+            plaza_buf = SquareCentre().build(plaza_plot, palette=default_palette)
             if plaza_buf is not None:
                 master_buffer.merge(plaza_buf)
 
@@ -391,10 +391,10 @@ class SettlementGenerator:
         try:
             if tower_type == "spire":
                 from structures.misc.spire_tower import SpireTower
-                tower_buf = SpireTower().build(self.editor, plot, palette, analysis=analysis)
+                tower_buf = SpireTower().build(plot, palette, analysis=analysis)
             else:
                 from structures.misc.clock_tower import ClockTower
-                tower_buf = ClockTower().build(self.editor, plot, palette)
+                tower_buf = ClockTower().build(plot, palette)
         except Exception:
             logger.error(
                 "[Phase 3a.6] Central tower builder failed at (%d, %d).",
@@ -458,31 +458,10 @@ class SettlementGenerator:
         if not state._road_coords:
             return []
 
-        building_mask = np.zeros(heightmap.shape, dtype=bool)
-        for b in state.buildings:
-            try:
-                li0, lj0 = area.world_to_index(b.x_from, b.z_from)
-                li1, lj1 = area.world_to_index(b.x_to,   b.z_to)
-                li0, li1 = sorted((li0, li1))
-                lj0, lj1 = sorted((lj0, lj1))
-                building_mask[li0:li1 + 1, lj0:lj1 + 1] = True
-            except ValueError:
-                pass
-
-        # Also block all occupied cells (tower, plaza, fountains, dock, plots) so
-        # connector paths never route through structures placed outside
-        # the normal plot/building pipeline.
-        for wx, wz in state.occupancy:
-            if (wx, wz) in state._road_coords:
-                continue  # roads are occupied too — keep them walkable
-            try:
-                li, lj = area.world_to_index(wx, wz)
-                building_mask[li, lj] = True
-            except ValueError:
-                pass
-
-        walkable  = ~water & ~building_mask
-        costs     = build_cost_grid(water, additional_blocked=building_mask)
+        # Only block water — connector paths may freely cross plot open ground.
+        # Marking every plot footprint as blocked leaves no walkable space for A*.
+        walkable  = ~water
+        costs     = build_cost_grid(water)
 
         road_bonus = np.zeros(heightmap.shape, dtype=np.float32)
         for rx, rz in state._road_coords:

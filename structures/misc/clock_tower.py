@@ -36,7 +36,6 @@ class ClockTower:
 
     def build(
         self,
-        _editor,
         plot: Plot,
         palette: BiomePalette,
         rotation: int = 0,
