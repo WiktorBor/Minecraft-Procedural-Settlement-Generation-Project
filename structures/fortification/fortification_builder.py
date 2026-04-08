@@ -6,7 +6,7 @@ from typing import Iterable
 from gdpc import Block
 
 from data.analysis_results import WorldAnalysisResult
-from data.biome_palettes import BiomePalette, palette_get
+from palette.palette_system import PaletteSystem, palette_get
 from data.build_area import BuildArea
 from data.configurations import SettlementConfig
 from data.settlement_entities import Building
@@ -40,7 +40,7 @@ class FortificationBuilder:
     def __init__(
         self,
         analysis: WorldAnalysisResult,
-        palette: BiomePalette,
+        palette: PaletteSystem,
         config: SettlementConfig,
     ) -> None:
         self.analysis = analysis
@@ -146,7 +146,7 @@ class FortificationBuilder:
             corner_ground_y = self._sample_ground_y(cx, cz, area, heightmap)
             body_h = wall_top_y + 2 - corner_ground_y
             tower_buf = TowerBuilder(
-                None, self.palette, height=body_h, width=tw,
+                self.palette, height=body_h, width=tw,
             ).build_at(cx, corner_ground_y, cz)
             buffer.merge(tower_buf)
 

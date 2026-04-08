@@ -21,6 +21,10 @@ Usage
 
     # or with raw coordinates (no Plot required):
     buf = grammar.build_at(x, y, z, w, d, rotation=90)
+
+    # force specific Ctx fields (e.g. for cottage-style cross roofs):
+    grammar = HouseGrammar(palette, forced_ctx_overrides={"roof_type": "cross", "cross_side": "west"})
+    buf = grammar.build(plot)
 """
 from __future__ import annotations
 
@@ -33,7 +37,7 @@ from gdpc import Block
 from gdpc.transform import rotatedBoxTransform
 from gdpc.vector_tools import Box
 
-from data.biome_palettes import BiomePalette, palette_get
+from palette.palette_system import PaletteSystem, palette_get
 from data.settlement_entities import Plot
 from structures.house.house_body_builder import BodyBuilder
 from structures.house.house_context import Ctx
@@ -53,13 +57,14 @@ class HouseGrammar:
 
     def __init__(
         self,
-        _editor,
-        palette: BiomePalette,
+        palette: PaletteSystem,
         model_path: Path | None = None,
         scorer: HouseScorer | None = None,
         ngram_scorer: HouseNgramScorer | None = None,
+        forced_ctx_overrides: dict | None = None,
     ) -> None:
         self.palette = palette
+        self._forced_ctx_overrides: dict = forced_ctx_overrides or {}
 
         self.scorer = scorer if scorer is not None else HouseScorer.load(
             model_path if model_path is not None else _DEFAULT_MODEL_PATH
@@ -76,6 +81,26 @@ class HouseGrammar:
     # ------------------------------------------------------------------
     # Public entry points
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def effective_footprint(w: int, d: int, rotation: int = 0) -> tuple[int, int]:
+        """
+        Return the (w, d) the grammar will actually occupy for a given plot
+        size and rotation — without running the grammar or scoring.
+
+        Mirrors the dimension clamping in _make_context so callers can
+        compute the exact build footprint ahead of time (e.g. for terrain
+        leveling).
+        """
+        if rotation in (90, 270):
+            w, d = d, w
+        w = max(7, min(w, 11))
+        d = max(7, min(d, 11))
+        if w % 2 == 0:
+            w -= 1
+        if d % 2 == 0:
+            d -= 1
+        return w, d
 
     def build(self, plot: Plot, rotation: int = 0) -> BlockBuffer:
         """Build a house on a Plot object. Returns a BlockBuffer."""
@@ -155,6 +180,7 @@ class HouseGrammar:
             ctx.x, ctx.roof_base_y, ctx.z,
             ctx.w, ctx.d,
             ctx.roof_type,
+            cross_side=ctx.cross_side,
         )
 
         if ctx.has_chimney:
@@ -233,7 +259,7 @@ class HouseGrammar:
             has_chimney = ("campfire" in smoke_block) and (random.random() < 0.80)
             has_porch   = random.random() < 0.45
 
-        return Ctx(
+        ctx = Ctx(
             x=x, y=y, z=z,
             w=w, d=d,
             rotation=rotation,
@@ -241,12 +267,16 @@ class HouseGrammar:
             has_upper=has_upper,
             upper_h=upper_h,
             roof_type=roof_type,
+            cross_side=None,
             has_chimney=has_chimney,
             has_porch=has_porch,
             door_face=door_face,
             palette=self.palette,
             buffer=BlockBuffer(),
         )
+        if self._forced_ctx_overrides:
+            ctx = replace(ctx, **self._forced_ctx_overrides)
+        return ctx
 
 
 # ---------------------------------------------------------------------------

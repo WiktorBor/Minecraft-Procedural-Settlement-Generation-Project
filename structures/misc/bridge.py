@@ -27,7 +27,7 @@ import logging
 
 from gdpc import Block
 
-from data.biome_palettes import BiomePalette, palette_get
+from palette.palette_system import PaletteSystem, palette_get
 from world_interface.block_buffer import BlockBuffer
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ class Bridge:
         y_level:   int,
         start_z:   int,
         length:    int,
-        palette:   BiomePalette,
+        palette:   PaletteSystem,
         *,
         width:     int = 2,
         span_size: int = 5,

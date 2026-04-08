@@ -43,6 +43,8 @@ from structures.misc.square_centre import SquareCentre
 from structures.tower.tower import Tower
 from structures.misc.fortification import Fortification
 from structures.misc.spire_tower import SpireTower
+from world_interface.block_buffer import BlockBuffer
+from world_interface.structure_placer import StructurePlacer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -90,33 +92,24 @@ SEED:            int | None           = 42
 
 class _CoordinateLogger:
     """
-    Wraps a GDPC Editor, intercepts every placeBlock call, and records
-    positions grouped by Y level.  Call .report() after a build.
+    Reports block positions grouped by Y level from a BlockBuffer.
+    Call .report(buffer, ...) after a build.
     """
 
-    def __init__(self, real_editor) -> None:
-        self._editor = real_editor
-        self._by_y: dict[int, dict] = {}
+    def report(self, buffer: BlockBuffer, base_x: int, base_y: int, base_z: int, w: int, d: int) -> None:
+        by_y: dict[int, dict] = {}
+        for (x, y, z), block in buffer.items():
+            if y not in by_y:
+                by_y[y] = {"xs": [], "zs": [], "blocks": set()}
+            by_y[y]["xs"].append(x)
+            by_y[y]["zs"].append(z)
+            by_y[y]["blocks"].add(getattr(block, "id", str(block)))
 
-    def placeBlock(self, position, block) -> None:
-        positions = position if isinstance(position, list) else [position]
-        for pos in positions:
-            self._record(int(pos[0]), int(pos[1]), int(pos[2]), block)
-        self._editor.placeBlock(position, block)
-
-    def _record(self, x: int, y: int, z: int, block) -> None:
-        if y not in self._by_y:
-            self._by_y[y] = {"xs": [], "zs": [], "blocks": set()}
-        self._by_y[y]["xs"].append(x)
-        self._by_y[y]["zs"].append(z)
-        self._by_y[y]["blocks"].add(getattr(block, "id", str(block)))
-
-    def report(self, base_x: int, base_y: int, base_z: int, w: int, d: int) -> None:
-        if not self._by_y:
+        if not by_y:
             logger.info("  [coords] No blocks recorded.")
             return
 
-        ys = sorted(self._by_y.keys())
+        ys = sorted(by_y.keys())
 
         logger.info("")
         logger.info("  ┌─ COORDINATE REPORT ─────────────────────────────────────────────")
@@ -130,7 +123,7 @@ class _CoordinateLogger:
         logger.info("  │  " + "─" * 85)
 
         for abs_y in ys:
-            info           = self._by_y[abs_y]
+            info           = by_y[abs_y]
             rel            = abs_y - base_y
             x_lo, x_hi    = min(info["xs"]), max(info["xs"])
             z_lo, z_hi    = min(info["zs"]), max(info["zs"])
@@ -160,16 +153,6 @@ class _CoordinateLogger:
 
         logger.info("  └─────────────────────────────────────────────────────────────────")
         logger.info("")
-        self._by_y.clear()
-
-    def getBlock(self, pos):
-        return self._editor.getBlock(pos)
-
-    def flushBuffer(self) -> None:
-        self._editor.flushBuffer()
-
-    def __getattr__(self, name):
-        return getattr(self._editor, name)
 
 
 # ---------------------------------------------------------------------------
@@ -231,28 +214,27 @@ def _clear(editor: Editor, x: int, y: int, z: int, w: int, d: int) -> None:
     editor.flushBuffer()
 
 
-def _build(name: str, coord_log: _CoordinateLogger, plot: Plot, palette, editor) -> None:
-    """Dispatch to the correct class based on template name."""
+def _build(name: str, plot: Plot, palette) -> BlockBuffer:
+    """Dispatch to the correct builder and return a BlockBuffer."""
     rotation = random.choice([0, 90, 180, 270])
     if name == "house":
-        grammar = HouseGrammar(coord_log, palette)
-        grammar.build(plot, rotation=rotation)
+        return HouseGrammar(palette).build(plot, rotation=rotation)
     elif name == "blacksmith":
-        Blacksmith().build(coord_log, plot, palette, rotation=rotation)
+        return Blacksmith().build(plot, palette, rotation=rotation)
     elif name == "market_stall":
-        MarketStall().build(coord_log, plot, palette)
+        return MarketStall().build(plot, palette, rotation=rotation)
     elif name in ("plaza", "plaza_small", "plaza_large"):
-        SquareCentre().build(coord_log, plot, palette)
+        return SquareCentre().build(plot, palette)
     elif name == "clock_tower":
-        ClockTower().build(coord_log, plot, palette)
+        return ClockTower().build(plot, palette, rotation=rotation)
     elif name == "tavern":
-        Tavern().build(coord_log, plot, palette)
+        return Tavern().build(plot, palette, rotation=rotation)
     elif name == "tower":
-        Tower().build(coord_log, plot, palette, rotation=rotation)
+        return Tower().build(plot, palette, rotation=rotation)
     elif name == "spire_tower":
-        SpireTower().build(coord_log, plot, palette, rotation=rotation)
+        return SpireTower().build(plot, palette, rotation=rotation)
     elif name == "fortification":
-        Fortification().build(coord_log, plot, palette, rotation=rotation)
+        return Fortification().build(plot, palette)
     else:
         raise ValueError(f"Unknown template name: '{name}'")
 
@@ -284,7 +266,8 @@ def main() -> None:
     logger.info("Build start: (%d, %d, %d)", start_x, base_y, start_z)
 
     palette   = get_biome_palette(PALETTE_NAME)
-    coord_log = _CoordinateLogger(editor)
+    coord_log = _CoordinateLogger()
+    placer    = StructurePlacer(editor)
     current_z = start_z
 
     for name in TEMPLATES_TO_BUILD:
@@ -302,10 +285,10 @@ def main() -> None:
             _clear(editor, x, base_y, z, w, d)
 
         try:
-            _build(name, coord_log, plot, palette, editor)
-            editor.flushBuffer()
+            buf = _build(name, plot, palette)
+            placer.place(buf)
             logger.info("  ✓ built")
-            coord_log.report(x, base_y, z, w, d)
+            coord_log.report(buf, x, base_y, z, w, d)
         except Exception as e:
             logger.error("  ✗ FAILED: %s", e, exc_info=True)
 

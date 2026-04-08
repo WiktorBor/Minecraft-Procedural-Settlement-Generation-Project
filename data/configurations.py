@@ -32,8 +32,8 @@ class SettlementConfig:
 
     # Plot spacing
     min_plot_distance:         int   = 6
-    min_plot_cluster_distance: int   = 10
-    max_plot_cluster_distance: int   = 30
+    min_plot_cluster_distance: int   = 8
+    max_plot_cluster_distance: int   = 25
 
     # Terrain thresholds for plot validation
     min_water_distance:  int   = 1
@@ -60,16 +60,31 @@ class SettlementConfig:
         }
     )
 
+    # Hard cap applied in the build loop — plots are clamped to these
+    # dimensions after planning but before terrain leveling and building.
+    # Set lower than plot_width/plot_depth to enforce a strict global max
+    # regardless of district type.
+    max_plot_width: int = 22
+    max_plot_depth: int = 16
+
     # Plot dimensions per district type (blocks).
     # These are the MAXIMUM target sizes — the planner draws each plot's
     # actual size randomly between min_plot_size and these values so the
     # settlement has a natural mix of small and large footprints.
     # Sizes are set to fit the largest structure in each district pool:
-    #   residential → tavern (12×8), tower_house (10×6)
-    #   fishing     → cottage (6×6), clock_tower (8×8)
-    #   forest      → tavern (12×8), clock_tower (8×8)
+    #   residential → tavern (19×8), tower_house (10×6)
+    #   fishing     → cottage (7×7), clock_tower (8×8)
+    #   forest      → tavern (19×8), tower_house (10×6)
     #   farming     → farm (5×5), market_stall (5×5)
     plot_width: dict[str, int] = field(
+        default_factory=lambda: {
+            "residential": 22,
+            "farming":     12,
+            "fishing":     10,
+            "forest":      22,
+        }
+    )
+    plot_depth: dict[str, int] = field(
         default_factory=lambda: {
             "residential": 14,
             "farming":     12,
@@ -77,20 +92,12 @@ class SettlementConfig:
             "forest":      14,
         }
     )
-    plot_depth: dict[str, int] = field(
-        default_factory=lambda: {
-            "residential": 12,
-            "farming":     12,
-            "fishing":     10,
-            "forest":      12,
-        }
-    )
     min_plot_size: dict[str, int] = field(
         default_factory=lambda: {
             "residential": 6,
             "farming":     5,
             "fishing":     5,
-            "forest":      5,
+            "forest":      7,
         }
     )
 
@@ -154,6 +161,12 @@ class TerrainConfig:
     # Minimum best-area dimensions — PatchSelector expands to meet these
     min_best_area_width: int = 125
     min_best_area_depth: int = 125
+
+    # Minimum clearance (in cells/blocks) kept between the selected best_area
+    # and the build_area boundary.  Structures may have overhangs that extend
+    # a few blocks beyond their plot origin, so a 20-block margin prevents any
+    # part of the settlement from touching the GDPC build-area edge.
+    build_area_edge_buffer: int = 20
 
     # Cap the area actually fetched and analysed.  Very large build areas
     # (e.g. 1001×1001) cause heightmap requests to time out; we only need a

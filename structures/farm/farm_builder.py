@@ -5,7 +5,7 @@ import random
 
 from gdpc import Block
 
-from data.biome_palettes import BiomePalette, palette_get
+from palette.palette_system import PaletteSystem, palette_get
 from data.settlement_entities import Plot
 from structures.base.geometry import fill_cuboid, fill_cuboid_wireframe, fill_line
 from world_interface.block_buffer import BlockBuffer
@@ -31,7 +31,7 @@ class FarmBuilder:
     Returns a BlockBuffer — does not write to Minecraft directly.
     """
 
-    def __init__(self, palette: BiomePalette) -> None:
+    def __init__(self, palette: PaletteSystem) -> None:
         self.palette = palette
 
     def build(self, plot: Plot) -> BlockBuffer:

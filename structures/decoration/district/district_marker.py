@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 from data.analysis_results import WorldAnalysisResult
-from data.biome_palettes import BiomePalette
+from palette.palette_system import PaletteSystem
 from data.settlement_entities import Districts, Plot
 from structures.decoration.plot.decoration_builder import DecorationBuilder
 from world_interface.block_buffer import BlockBuffer
@@ -24,11 +24,11 @@ class DistrictMarker:
     def __init__(
         self,
         analysis: WorldAnalysisResult,
-        palette: BiomePalette,
+        palette: PaletteSystem,
     ) -> None:
         self.analysis = analysis
         self.palette  = palette
-        self._builder = DecorationBuilder(None, palette)
+        self._builder = DecorationBuilder(palette)
 
     def build(self, districts: Districts) -> tuple[BlockBuffer, list[tuple[int, int]]]:
         """

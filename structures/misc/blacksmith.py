@@ -44,7 +44,7 @@ from __future__ import annotations
 
 from gdpc import Block
 
-from data.biome_palettes import BiomePalette, palette_get
+from palette.palette_system import PaletteSystem, palette_get
 from data.settlement_entities import Plot
 from structures.roofs.roof_builder import _RoofCorners, build_gabled_roof
 from world_interface.block_buffer import BlockBuffer
@@ -65,7 +65,7 @@ class Blacksmith:
     def build(
         self,
         plot: Plot,
-        palette: BiomePalette,
+        palette: PaletteSystem,
         rotation: int = 0,
     ) -> BlockBuffer:
         x, y, z = plot.x, plot.y, plot.z
@@ -111,7 +111,7 @@ class Blacksmith:
 
 class _Builder:
 
-    def __init__(self, buffer: BlockBuffer, palette: BiomePalette) -> None:
+    def __init__(self, buffer: BlockBuffer, palette: PaletteSystem) -> None:
         self.buf = buffer
         self.p   = palette
 

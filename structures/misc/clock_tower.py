@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from gdpc import Block
 
-from data.biome_palettes import BiomePalette, palette_get
+from palette.palette_system import PaletteSystem, palette_get
 from data.settlement_entities import Plot
 
 from structures.base.build_context import BuildContext
@@ -37,7 +37,7 @@ class ClockTower:
     def build(
         self,
         plot: Plot,
-        palette: BiomePalette,
+        palette: PaletteSystem,
         rotation: int = 0,
     ) -> BlockBuffer:
         y  = plot.y

@@ -6,10 +6,13 @@ Architecture
 Three cooperating classes:
 
     BlockSequenceRecorder
-        Wraps an Editor and intercepts every placeBlock call during a grammar
-        run, collecting the sequence of block IDs placed.  The grammar code
-        needs no changes — swap the real editor for a recording one, run
-        build(), then call recorder.finish() to retrieve the sequence.
+        Implements the BlockBuffer interface and records every block placed
+        during a grammar probe run, collecting the sequence of block IDs.
+        Used by HouseGrammar as a drop-in buffer replacement:
+            recorder = BlockSequenceRecorder()
+            probe_ctx = replace(ctx, buffer=recorder)
+            grammar._do_place(probe_ctx)
+            seq = recorder.finish()
 
     NgramLanguageModel
         Bigram + trigram model with Laplace smoothing.  Trained on a corpus
@@ -46,9 +49,9 @@ Offline evaluation (eval_house_ngram.py)
 Usage
 -----
     # Training (done by eval_house_ngram.py — not called at runtime)
-    recorder = BlockSequenceRecorder(editor)
-    grammar  = HouseGrammar(recorder, palette)
-    grammar.build(plot)
+    recorder = BlockSequenceRecorder()
+    grammar  = HouseGrammar(palette)
+    grammar.build(plot)   # HouseGrammar uses BlockSequenceRecorder internally
     seq = recorder.finish()
 
     model = NgramLanguageModel(n=3)
@@ -59,7 +62,7 @@ Usage
 
     # Runtime
     scorer = HouseNgramScorer.load("models/house_ngram.pkl")
-    grammar = HouseGrammar(editor, palette, ngram_scorer=scorer)
+    grammar = HouseGrammar(palette, ngram_scorer=scorer)
 """
 from __future__ import annotations
 

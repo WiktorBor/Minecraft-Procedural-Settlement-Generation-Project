@@ -24,7 +24,8 @@ class StructurePlacer:
 
     def place(self, buffer: BlockBuffer) -> None:
         """Place all blocks from the buffer and flush to Minecraft."""
-        logger.info("Placing %d blocks...", len(buffer))
+        total = len(buffer)
+        logger.info("Placing %d blocks...", total)
         for (x, y, z), block in buffer.items():
             self.editor.placeBlock((x, y, z), block)
         self.editor.flushBuffer()

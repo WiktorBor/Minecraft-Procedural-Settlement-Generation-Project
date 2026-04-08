@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 from data.analysis_results import WorldAnalysisResult
-from data.biome_palettes import BiomePalette
+from palette.palette_system import PaletteSystem
 from data.configurations import SettlementConfig
 from data.settlement_entities import Plot
 from world_interface.block_buffer import BlockBuffer
@@ -56,57 +56,52 @@ def _rotation(plot) -> int:
 
 def _build_registry(analysis: WorldAnalysisResult | None = None) -> dict[str, tuple[Callable, int, int]]:
 
-    def cottage(ed, pl, pal):
-        from structures.house.house_grammar import HouseGrammar
-        return HouseGrammar(
-            ed, pal,
+    def cottage(pl, pal):
+        from structures.misc.cottage import CottageBuilder
+        side = (pl.facing or "south").lower()
+        return CottageBuilder().build(
+            pl, pal,
+            rotation=_rotation(pl),
+            connection_side=side,
             scorer=_HOUSE_SCORER,
             ngram_scorer=_HOUSE_NGRAM_SCORER,
-        ).build(pl, rotation=_rotation(pl))
+        )
 
-    def blacksmith(ed, pl, pal):
+    def blacksmith(pl, pal):
         from structures.misc.blacksmith import Blacksmith
         return Blacksmith().build(pl, pal, rotation=_rotation(pl))
 
-    def dock(ed, pl, pal):
+    def dock(pl, pal):
         from structures.misc.dock import Dock
         return Dock().build(pl, pal, rotation=_rotation(pl))
 
-    def market_stall(ed, pl, pal):
+    def market_stall(pl, pal):
         from structures.misc.market_stall import MarketStall
         return MarketStall().build(pl, pal, rotation=_rotation(pl))
 
-    def clock_tower(ed, pl, pal):
+    def clock_tower(pl, pal):
         from structures.misc.clock_tower import ClockTower
         return ClockTower().build(pl, pal, rotation=_rotation(pl))
 
-    def tavern(ed, pl, pal):
+    def tavern(pl, pal):
         from structures.misc.tavern import Tavern
         return Tavern().build(pl, pal, rotation=_rotation(pl))
 
-    def tower(ed, pl, pal):
-        from structures.tower.tower import Tower
-        return Tower().build(ed, pl, pal, rotation=_rotation(pl))
-
-    def spire_tower(_ed, pl, pal):
+    def spire_tower(pl, pal):
         from structures.misc.spire_tower import SpireTower
         return SpireTower().build(pl, pal, rotation=_rotation(pl), analysis=analysis)
 
-    def fortification(_ed, pl, pal):
-        from structures.misc.fortification import Fortification
-        return Fortification().build(pl, pal)
-
-    def plaza(_ed, pl, pal):
+    def plaza(pl, pal):
         from structures.misc.square_centre import SquareCentre
         return SquareCentre().build(pl, pal)
 
-    def farm(_, pl, pal):
+    def farm(pl, pal):
         from structures.farm.farm import Farm
         return Farm().build(pl, pal)
 
-    def decoration(ed, pl, pal):
+    def decoration(pl, pal):
         from structures.decoration.plot.decoration import Decoration
-        return Decoration().build(ed, pl, pal)
+        return Decoration().build(pl, pal)
 
     # (builder_fn, min_width, min_depth)
     # Placement rules:
@@ -123,7 +118,7 @@ def _build_registry(analysis: WorldAnalysisResult | None = None) -> dict[str, tu
         "plaza":        (plaza,       10, 10),
         "market_stall": (market_stall, 5,  5),
         "clock_tower":  (clock_tower,  8,  8),
-        "tavern":       (tavern,      12,  8),
+        "tavern":       (tavern,      19,  8),
         "farm":         (farm,         5,  5),
         "dock":         (dock,        14, 10),
         "decoration":   (decoration,   4,  4),
@@ -136,28 +131,27 @@ def _build_registry(analysis: WorldAnalysisResult | None = None) -> dict[str, tu
 
 DISTRICT_POOLS: dict[str, dict[str, float]] = {
     "residential": {
-        "cottage":       0.30,
-        "tower_house":   0.08,
-        "blacksmith":    0.16,
-        "market_stall":  0.15,
-        "clock_tower":   0.09,
-        "tavern":        0.09,
-        "farm":          0.13,
+        "cottage":       0.35,
+        "tower_house":   0.15,
+        "blacksmith":    0.20,
+        "clock_tower":   0.12,
+        "tavern":        0.13,
+        "farm":          0.05,
     },
     "farming": {
-        "farm":          0.70,
-        "market_stall":  0.30,
+        "farm":          0.85,
+        "market_stall":  0.15,
     },
     "fishing": {
-        "dock":          0.42,
-        "cottage":       0.26,
-        "market_stall":  0.21,
-        "clock_tower":   0.11,
+        "dock":          0.50,
+        "cottage":       0.30,
+        "clock_tower":   0.15,
+        "market_stall":  0.05,
     },
     "forest": {
-        "clock_tower":   0.25,
-        "cottage":       0.40,
-        "tavern":        0.35,
+        "tavern":        0.40,
+        "tower_house":   0.35,
+        "cottage":       0.25,
     },
 }
 
@@ -185,7 +179,7 @@ class StructureSelector:
         self,
         analysis: WorldAnalysisResult,
         config: SettlementConfig,
-        palette: BiomePalette,
+        palette: PaletteSystem,
         has_water: bool = False,
     ) -> None:
         self.analysis  = analysis
@@ -225,6 +219,25 @@ class StructureSelector:
 
         return self._weighted_choice(eligible)
 
+    def effective_footprint(self, plot: Plot, template_key: str) -> tuple[int, int]:
+        """
+        Return the (w, d) the selected builder will actually occupy.
+
+        For house-grammar templates ("cottage", "tower_house") the grammar
+        deterministically clamps its build dimensions to 7-11 (odd), so the
+        effective footprint can be smaller than the full plot.  For all other
+        builders the full plot dimensions are used.
+
+        Used by the generator to target terrain leveling to the structure
+        footprint rather than the entire plot.
+        """
+        if template_key in ("cottage", "tower_house"):
+            from structures.house.house_grammar import HouseGrammar
+            return HouseGrammar.effective_footprint(
+                plot.width, plot.depth, _rotation(plot)
+            )
+        return plot.width, plot.depth
+
     def build(self, plot: Plot, template_key: str) -> BlockBuffer | None:
         """Execute the selected template on the plot. Returns a BlockBuffer or None on failure."""
         entry = self._registry.get(template_key)
@@ -234,7 +247,7 @@ class StructureSelector:
 
         builder, _, _ = entry
         try:
-            return builder(None, plot, self.palette)
+            return builder(plot, self.palette)
         except Exception:
             logger.error(
                 "Builder '%s' failed on plot (%d,%d) size %dx%d.",

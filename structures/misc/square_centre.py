@@ -5,7 +5,7 @@ import math
 
 from gdpc import Block
 
-from data.biome_palettes import BiomePalette
+from palette.palette_system import PaletteSystem, palette_get
 from data.settlement_entities import Plot
 from world_interface.block_buffer import BlockBuffer
 
@@ -27,7 +27,7 @@ class SquareCentre:
     def build(
         self,
         plot: Plot,
-        palette: BiomePalette | None = None,
+        palette: PaletteSystem | None = None,
         rotation: int = 0,
     ) -> BlockBuffer:
         buffer = BlockBuffer()

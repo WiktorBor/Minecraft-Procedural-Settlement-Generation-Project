@@ -9,7 +9,7 @@ import random
 
 from gdpc import Block
 
-from data.biome_palettes import BiomePalette, palette_get
+from palette.palette_system import PaletteSystem, palette_get
 from data.settlement_entities import Plot
 from structures.base.geometry import fill_cuboid
 from world_interface.block_buffer import BlockBuffer
@@ -27,7 +27,7 @@ class MarketStall:
     def build(
         self,
         plot: Plot,
-        palette: BiomePalette,
+        palette: PaletteSystem,
         rotation: int = 0,
     ) -> BlockBuffer:
         # Centre on the plot; extend half the plot size in each direction

@@ -99,6 +99,11 @@ class DistrictPlanner:
 
         score = self._get_score_map(local_slope, local_roughness)
 
+        # Zero out water cells so Poisson-disk seeds are never placed on water.
+        water_mask = self.analysis.water_mask.astype(bool)
+        score = score.copy()
+        score[water_mask] = 0.0
+
         # Shared index grid — used for both the exclusion mask and Voronoi assignment.
         xi, zi = np.indices((w, d))
 
@@ -151,6 +156,9 @@ class DistrictPlanner:
         _, district_map_flat = tree.query(coords)
         district_map = district_map_flat.reshape(w, d)
 
+        # Erase water cells from the district map — they are never buildable.
+        district_map[water_mask] = -1
+
         # Erase plaza exclusion zone from the district map so those cells
         # are never assigned to any district.
         if excl_mask is not None:
@@ -178,7 +186,11 @@ class DistrictPlanner:
         min_structures = getattr(self.config, "min_structures_per_district", 3)
         smallest_w     = min(self.config.plot_width.values())
         smallest_d     = min(self.config.plot_depth.values())
-        min_cells      = min_structures * smallest_w * smallest_d * 4
+        # ×1 (not ×4): score-biased Poisson disk concentrates seeds in valid
+        # terrain, producing many small good-terrain regions that a strict
+        # threshold would discard.  The plot planner's per-cell terrain checks
+        # filter out bad spots within each district anyway.
+        min_cells      = min_structures * smallest_w * smallest_d
 
         valid_indices = [
             idx for idx in range(n_seeds) if counts[idx] >= min_cells
@@ -299,7 +311,7 @@ class DistrictPlanner:
         min_structures = getattr(self.config, "min_structures_per_district", 3)
         smallest_w     = min(self.config.plot_width.values())
         smallest_d     = min(self.config.plot_depth.values())
-        min_cells      = min_structures * smallest_w * smallest_d * 4
+        min_cells      = min_structures * smallest_w * smallest_d
 
         for dtype in sorted(all_types):
             type_mask = np.zeros(final_map.shape, dtype=bool)

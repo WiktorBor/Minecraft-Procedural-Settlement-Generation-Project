@@ -59,6 +59,9 @@ CLEAR_FIRST: bool = True
 
 ROTATION: int = 0   # 0 / 90 / 180 / 270
 
+WITH_TOWER:  bool = True   # set False to skip the stone tower
+WITH_BRIDGE: bool = True   # set False to skip the arched bridge
+
 # =============================================================================
 
 
@@ -156,7 +159,8 @@ def main() -> None:
         PLOT_WIDTH, PLOT_DEPTH, hx, hy, hz, ROTATION, PALETTE_NAME,
     )
 
-    buf = Tavern().build(plot, palette, rotation=ROTATION)
+    buf = Tavern().build(plot, palette, rotation=ROTATION,
+                         with_tower=WITH_TOWER, with_bridge=WITH_BRIDGE)
     if not buf:
         logger.error("Tavern returned an empty buffer — check PLOT_WIDTH >= 19 and PLOT_DEPTH >= 8.")
         sys.exit(1)

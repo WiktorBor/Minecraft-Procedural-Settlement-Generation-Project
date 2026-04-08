@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from gdpc import Block
 
 from data.analysis_results import WorldAnalysisResult
-from data.biome_palettes import BiomePalette, palette_get
+from palette.palette_system import PaletteSystem, palette_get
 from data.settlement_entities import RoadCell
 from world_interface.block_buffer import BlockBuffer
 
@@ -43,7 +43,7 @@ class RoadBuilder:
     def __init__(
         self,
         analysis: WorldAnalysisResult,
-        palette: BiomePalette,
+        palette: PaletteSystem,
     ) -> None:
         self.analysis  = analysis
         self._path     = Block(palette["path"])

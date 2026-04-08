@@ -4,19 +4,19 @@ from __future__ import annotations
 import logging
 import math
 import random
+from dataclasses import replace
 
 import numpy as np
 from gdpc.editor import Editor
 
 from analysis.world_analysis import WorldAnalyser
-from data.biome_palettes import BiomePalette
 from data.configurations import TerrainConfig, SettlementConfig
 from data.settlement_entities import Building, Plot, RoadCell
 from data.settlement_state import SettlementState
 from structures.misc.square_centre import SquareCentre
 from utils.astar import find_path
 from utils.walkable_grid import build_cost_grid
-from data.palette_system import PaletteSystem
+from palette.palette_system import PaletteSystem
 from planning.settlement_planner import SettlementPlanner
 from structures.base.structure_selector import StructureSelector
 from structures.decoration.district.district_marker import DistrictMarker
@@ -204,12 +204,36 @@ class SettlementGenerator:
                 )
                 continue
 
+            # Clamp plot to the configured hard maximum before building.
+            max_w = self.settlement_config.max_plot_width
+            max_d = self.settlement_config.max_plot_depth
+            if plot.width > max_w or plot.depth > max_d:
+                plot.width = min(plot.width, max_w)
+                plot.depth = min(plot.depth, max_d)
+                logger.debug(
+                    "  Plot %d/%d clamped to %dx%d.",
+                    idx, len(state.plots), plot.width, plot.depth,
+                )
+
             logger.info(
                 "  Building %d/%d: %s at (%d, %d).",
                 idx, len(state.plots), template_key, plot.x, plot.z,
             )
 
-            level_plot_area(self.editor, analysis, plot)
+            # Level only the structure's actual footprint, not the full plot.
+            # House-grammar templates build within a 7-11 block window that
+            # can be smaller than the plot; all other builders fill the plot.
+            struct_w, struct_d = selector.effective_footprint(plot, template_key)
+            if struct_w < plot.width or struct_d < plot.depth:
+                level_target = replace(plot, width=struct_w, depth=struct_d)
+                level_plot_area(self.editor, analysis, level_target)
+                plot.y = level_target.y
+            else:
+                level_plot_area(self.editor, analysis, plot)
+            # Flush leveling blocks before building so they're committed
+            # to Minecraft independently of the structure batch.
+            self.editor.flushBuffer()
+
             buf = selector.build(plot, template_key)
             if buf is None:
                 logger.warning(
@@ -264,7 +288,7 @@ class SettlementGenerator:
     def _place_central_tower(
         self,
         state: SettlementState,
-        palette: BiomePalette,
+        palette: PaletteSystem,
         analysis,
     ) -> set[tuple[int, int]] | None:
         """
@@ -362,6 +386,10 @@ class SettlementGenerator:
                 # Small random jitter so identical-height candidates don't
                 # always resolve to the same compass direction each run
                 score += random.uniform(-0.5, 0.5)
+
+                water_slice = analysis.water_mask[li:li + min_w, lj:lj + min_d]
+                if water_slice.any():
+                    continue
 
                 if score > best_score and _footprint_clear(wx, wz, min_w, min_d):
                     best_score = score

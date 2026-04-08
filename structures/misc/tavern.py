@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from gdpc import Block
 
-from data.biome_palettes import BiomePalette, palette_get
+from palette.palette_system import PaletteSystem, palette_get
 from data.settlement_entities import Plot
 from structures.base.build_context import BuildContext
 from world_interface.block_buffer import BlockBuffer
@@ -89,7 +89,7 @@ _MIN_W:  int = _MIN_TW + _MIN_BW + _MIN_CW   # = 19
 
 _MIN_D:  int = 8            # shared depth (perpendicular to primary axis)
 
-_BRIDGE_HEIGHT: int = 4     # bridge floor height above plot.y
+_BRIDGE_HEIGHT: int = 3     # bridge floor height above plot.y
 
 
 # ---------------------------------------------------------------------------
@@ -97,25 +97,24 @@ _BRIDGE_HEIGHT: int = 4     # bridge floor height above plot.y
 # ---------------------------------------------------------------------------
 
 def _build_bridge(
-    buffer: BlockBuffer,
-    palette: BiomePalette,
+    palette: PaletteSystem,
     x: int, y: int, z: int,
     bridge_len: int,
     bridge_w: int,
     bridge_y: int,
     span_axis: str,
-) -> tuple:
+) -> BlockBuffer:
     """
     Arched bridge using the same belfry-face arch as the tower.
 
     span_axis='x': bridge runs along X (bridge_len blocks), width=bridge_w along Z.
     span_axis='z': bridge runs along Z (bridge_len blocks), width=bridge_w along X.
 
-    Each side wall is a full-height stone column with a belfry-style
-    dark-oak arch at the top.  Fence pillars and a gabled roof sit above.
-
-    Returns (rc, ctx_r) so the caller can place the roof last.
+    Builds all bridge elements — arches, floor, fences, ceiling, roof — into
+    its own BlockBuffer and returns it complete, ready to be merged last.
     """
+    buf = BlockBuffer()
+
     stone_id  = palette_get(palette, "foundation", "minecraft:stone_bricks")
     log_mat   = palette_get(palette, "accent",     "minecraft:dark_oak_log")
     plank_mat = palette_get(palette, "wall",       "minecraft:dark_oak_planks")
@@ -126,10 +125,14 @@ def _build_bridge(
 
     lintel_y    = bridge_y
     arch_y      = bridge_y - 1
-    fence_top_y = bridge_y + 3
+    fence_top_y = bridge_y + 4
+
+    # End arch (doorway opening): lintel sits 3 blocks above the bridge floor
+    door_lintel_y = bridge_y + 4
+    door_arch_y   = bridge_y + 3
 
     # BuildContext for build_belfry_face (rotation=0, world coords pass through)
-    ctx = BuildContext(buffer, dict(palette), rotation=0,
+    ctx = BuildContext(buf, dict(palette), rotation=0,
                        origin=(x, y, z), size=(bridge_len, bridge_w))
 
     def _arch_face(fixed_coord: int, span_start: int, span_end: int,
@@ -140,9 +143,9 @@ def _build_bridge(
         for corner in [span_start, span_end]:
             cx, cz = make_pos(corner, fixed_coord)
             for dy in range(1, _FOUND_DEPTH + 1):
-                buffer.place(cx, y - dy, cz, Block(stone_id))
+                buf.place(cx, y - dy, cz, Block(stone_id))
             for by in range(y, lintel_y + 1):
-                buffer.place(cx, by, cz, Block(log_mat))
+                buf.place(cx, by, cz, Block(log_mat))
 
         # Belfry-face arch (plank lintel + stair shoulders + trapdoor keystone)
         build_belfry_face(
@@ -170,18 +173,34 @@ def _build_bridge(
                    stair_left={"facing": "west", "half": "top"},
                    stair_right={"facing": "east", "half": "top"})
 
+        # End arches — doorway portals at each bridge entry/exit
+        for end_x in [x - 1, x + bridge_len]:
+            build_belfry_face(
+                ctx,
+                lintel_y=door_lintel_y,
+                arch_y=door_arch_y,
+                along=[(end_x, bz) for bz in range(z_left + 1, z_right)],
+                plank_mat=plank_mat,
+                stair_mat=stair_mat,
+                trap_mat=trap_mat,
+                stair_left={"facing": "north", "half": "top"},
+                stair_right={"facing": "south", "half": "top"},
+            )
+
         # Bridge floor
         for bx in range(x, x + bridge_len):
             for bz in range(z_left, z_right + 1):
-                buffer.place(bx, bridge_y, bz, Block(plank_id))
+                buf.place(bx, bridge_y, bz, Block(plank_id))
             for bz in [z_left, z_right]:
                 for fy in range(bridge_y + 1, fence_top_y + 1):
-                    buffer.place(bx, fy, bz, Block(fence_id))
+                    buf.place(bx, fy, bz, Block(fence_id))
+            for bz in range(z_left, z_right + 1):
+                buf.place(bx, fence_top_y, bz, Block(plank_id))
 
-        rc = _BridgeRC(x + 1, fence_top_y + 1, z, bridge_len, bridge_w - 1, pitch_along_x=False)
-        ctx_r = BuildContext(buffer, dict(palette), rotation=0,
-                             origin=(x + 1 , fence_top_y + 1, z), size=(bridge_len - 1, bridge_w))
-        return rc, ctx_r
+        ctx_r  = BuildContext(buf, dict(palette), rotation=0,
+                              origin=(x + 1, fence_top_y + 1, z), size=(bridge_len - 1, bridge_w))
+        rc_bri = _BridgeRC(x + 1, fence_top_y + 1, z, bridge_len - 2, bridge_w, pitch_along_x=False)
+        build_gabled_roof(ctx_r, rc_bri)
 
     else:  # span_axis == 'z'
         x_left  = x
@@ -196,27 +215,46 @@ def _build_bridge(
                    stair_left={"facing": "north", "half": "top"},
                    stair_right={"facing": "south", "half": "top"})
 
+        # End arches — doorway portals at each bridge entry/exit
+        for end_z in [z - 1, z + bridge_len]:
+            build_belfry_face(
+                ctx,
+                lintel_y=door_lintel_y,
+                arch_y=door_arch_y,
+                along=[(bx, end_z) for bx in range(x_left + 1, x_right)],
+                plank_mat=plank_mat,
+                stair_mat=stair_mat,
+                trap_mat=trap_mat,
+                stair_left={"facing": "west", "half": "top"},
+                stair_right={"facing": "east", "half": "top"},
+            )
+
         # Bridge floor
         for bz in range(z, z + bridge_len):
             for bx in range(x_left, x_right + 1):
-                buffer.place(bx, bridge_y, bz, Block(plank_id))
+                buf.place(bx, bridge_y, bz, Block(plank_id))
             for bx in [x_left, x_right]:
                 for fy in range(bridge_y + 1, fence_top_y + 1):
-                    buffer.place(bx, fy, bz, Block(fence_id))
+                    buf.place(bx, fy, bz, Block(fence_id))
+            for bx in range(x_left, x_right + 1):
+                buf.place(bx, fence_top_y, bz, Block(plank_id))
 
-        rc = _BridgeRC(x, fence_top_y + 1, z + 1, bridge_w + 1, bridge_len, pitch_along_x=True)
-        ctx_r = BuildContext(buffer, dict(palette), rotation=0,
-                             origin=(x, fence_top_y + 1, z + 1), size=(bridge_w, bridge_len - 1))
-        return rc, ctx_r
+        ctx_r  = BuildContext(buf, dict(palette), rotation=0,
+                              origin=(x, fence_top_y + 1, z + 1), size=(bridge_w, bridge_len - 1))
+        rc_bri = _BridgeRC(x, fence_top_y + 1, z + 1, bridge_w, bridge_len - 1, pitch_along_x=True)
+        build_gabled_roof(ctx_r, rc_bri)
+
+
+    return buf
 
 
 # ---------------------------------------------------------------------------
-# Cottage helper
+# Annex helper
 # ---------------------------------------------------------------------------
 
-def _build_cottage(
+def _build_annex(
     buffer: BlockBuffer,
-    palette: BiomePalette,
+    palette: PaletteSystem,
     x: int, y: int, z: int,
     cw: int, d: int,
     wall_h: int,
@@ -224,7 +262,8 @@ def _build_cottage(
     rotation: int,
 ) -> None:
     """
-    Half-timbered cottage.  Door faces perpendicular to the bridge connection.
+    Half-timbered annex (habitation wing).  Door faces perpendicular to the
+    bridge so the entrance is on the long side, never toward the bridge.
 
     bridge_side west/east → bridge axis is X → door on south face
     bridge_side north/south → bridge axis is Z → door on east face
@@ -249,12 +288,29 @@ def _build_cottage(
                 ctx.place_block((x,          y + dy, z + dz), Block(accent))
                 ctx.place_block((x + cw - 1, y + dy, z + dz), Block(accent))
 
-        add_door(ctx,    x, y, z, cw, facing=door_facing)
+        add_door(ctx, x, y, z, cw, facing=door_facing)
         add_windows(ctx, x, y, z, cw, d)
-        build_ceiling(ctx, x, y + wall_h,     z, cw, d, floor_y=y)
-        build_roof(ctx,    x, y + wall_h + 1, z, cw, d, roof_type="gabled")
+        build_ceiling(ctx, x, y + wall_h, z, cw, d, floor_y=y)
+        roof_y = y + wall_h + 1
+        build_roof(ctx, x, roof_y, z, cw, d, "cross", bridge_side)
         add_lanterns(ctx,  x, y, z, cw, d)
         add_chimney(ctx,   x, y, z, cw, d, wall_h + 4)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _bridge_side(rotation: int) -> str:
+    """
+    Return the cardinal face of the annex that the bridge connects to.
+
+    rotation=0   → bridge runs +X → hits annex west face  → "west"
+    rotation=90  → bridge runs +Z → hits annex north face → "north"
+    rotation=180 → bridge runs -X → hits annex east face  → "east"
+    rotation=270 → bridge runs -Z → hits annex south face → "south"
+    """
+    return ("west", "north", "east", "south")[(rotation // 90) % 4]
 
 
 # ---------------------------------------------------------------------------
@@ -263,11 +319,11 @@ def _build_cottage(
 
 class Tavern:
     """
-    Three-part medieval complex: stone tower → arched bridge → half-timbered cottage.
+    Three-part medieval complex: stone tower → arched bridge → half-timbered annex.
 
     Layout (rotation=0, along X):
       x ────────────────────────────────────────────────────── x+w
-      [ Tower (tw×tw) ][ Bridge (bw×tw) ][ Cottage (cw×d) ]
+      [ Tower (tw×tw) ][ Bridge (bw×tw) ][ Annex (cw×d) ]
 
     Bridge width matches the tower (tw), not the plot depth.
     Bridge arches use the same belfry-face arch as the tower.
@@ -279,8 +335,10 @@ class Tavern:
     def build(
         self,
         plot: Plot,
-        palette: BiomePalette,
+        palette: PaletteSystem,
         rotation: int = 0,
+        with_tower: bool = True,
+        with_bridge: bool = True,
     ) -> BlockBuffer:
         x, y, z = plot.x, plot.y, plot.z
         w, d    = plot.width, plot.depth
@@ -289,7 +347,7 @@ class Tavern:
         if w < _MIN_W or d < _MIN_D:
             return buffer
 
-        tw = max(_MIN_TW, min(d, 7))
+        tw = _MIN_TW   # fixed tower width — don't grow with depth or bridge breaks
         bw = max(_MIN_BW, int(w * 0.25))
         cw = w - tw - bw
         if cw < _MIN_CW:
@@ -305,50 +363,55 @@ class Tavern:
         # TowerBuilder: belfry_y = y + tower_h + 2
         # Bridge roof peak = y + _BRIDGE_HEIGHT + 4 + (tw + 2) // 2
         #   (_BRIDGE_HEIGHT+3 = fence_top_y offset, +1 roof start, +(tw+2)//2 peak)
-        tower_h = _BRIDGE_HEIGHT + 2 + (tw + 2) // 2
+        tower_h = _BRIDGE_HEIGHT + 3 + (tw + 2) // 2
 
         steps     = (rotation // 90) % 4
         span_axis = 'z' if steps in (1, 3) else 'x'
 
         if span_axis == 'x':
             t_offset_z = (d - tw) // 2
-            tower_buf = TowerBuilder(
-                None, palette,
-                height=tower_h, width=tw,
-                with_door=True, with_windows=True,
-                rotation=rotation,
-            ).build_at(x, y, z + t_offset_z)
-            buffer.merge(tower_buf)
+            if with_tower:
+                tower_buf = TowerBuilder(
+                    palette,
+                    height=tower_h, width=tw,
+                    with_door=True, with_windows=True,
+                    rotation=rotation,
+                ).build_at(x, y, z + t_offset_z)
+                buffer.merge(tower_buf)
 
-            roof_rc, roof_ctx = _build_bridge(buffer, palette,
-                                              x + tw, y, z + t_offset_z,
-                                              bridge_len=bw, bridge_w=tw,
-                                              bridge_y=bridge_y, span_axis='x')
+            if with_bridge:
+                bridge_buf = _build_bridge(palette,
+                                           x + tw, y, z + t_offset_z,
+                                           bridge_len=bw, bridge_w=tw,
+                                           bridge_y=bridge_y, span_axis='x')
 
-            _build_cottage(buffer, palette,
-                           x + tw + bw, y, z, cw, d, wall_h,
-                           bridge_side='west', rotation=rotation)
+            _build_annex(buffer, palette,
+                         x + tw + bw, y, z, cw, d, wall_h,
+                         bridge_side=_bridge_side(rotation), rotation=rotation)
 
         else:  # span_axis == 'z'
             t_offset_x = (d - tw) // 2
-            tower_buf = TowerBuilder(
-                None, palette,
-                height=tower_h, width=tw,
-                with_door=True, with_windows=True,
-                rotation=rotation,
-            ).build_at(x + t_offset_x, y, z)
-            buffer.merge(tower_buf)
+            if with_tower:
+                tower_buf = TowerBuilder(
+                    palette,
+                    height=tower_h, width=tw,
+                    with_door=True, with_windows=True,
+                    rotation=rotation,
+                ).build_at(x + t_offset_x, y, z)
+                buffer.merge(tower_buf)
 
-            roof_rc, roof_ctx = _build_bridge(buffer, palette,
-                                              x + t_offset_x, y, z + tw,
-                                              bridge_len=bw, bridge_w=tw,
-                                              bridge_y=bridge_y, span_axis='z')
+            if with_bridge:
+                bridge_buf = _build_bridge(palette,
+                                           x + t_offset_x, y, z + tw,
+                                           bridge_len=bw, bridge_w=tw,
+                                           bridge_y=bridge_y, span_axis='z')
 
-            _build_cottage(buffer, palette,
-                           x, y, z + tw + bw, d, cw, wall_h,
-                           bridge_side='north', rotation=rotation)
+            _build_annex(buffer, palette,
+                         x, y, z + tw + bw, d, cw, wall_h,
+                         bridge_side=_bridge_side(rotation), rotation=rotation)
 
-        # Bridge roof placed last so it is never overwritten by other structures
-        build_gabled_roof(roof_ctx, roof_rc)
+        # Bridge (with its roof) merged last so nothing overwrites it
+        if with_bridge:
+            buffer.merge(bridge_buf)
 
         return buffer

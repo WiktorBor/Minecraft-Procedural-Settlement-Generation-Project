@@ -1,7 +1,7 @@
 """Standalone medieval spire tower placed on a plot."""
 from __future__ import annotations
 
-from data.biome_palettes import BiomePalette
+from palette.palette_system import PaletteSystem
 from data.settlement_entities import Plot
 from structures.tower.tower_builder import TowerBuilder
 from world_interface.block_buffer import BlockBuffer
@@ -11,9 +11,8 @@ class Tower:
 
     def build(
         self,
-        _editor,
         plot: Plot,
-        palette: BiomePalette,
+        palette: PaletteSystem,
         rotation: int = 0,
     ) -> BlockBuffer:
         tw = 5
@@ -21,7 +20,7 @@ class Tower:
         cz = plot.z + (plot.depth  - tw) // 2
 
         return TowerBuilder(
-            None, palette,
+            palette,
             height=10, width=tw,
             with_door=True, with_windows=True,
             rotation=rotation,

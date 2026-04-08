@@ -4,15 +4,7 @@ structures/house/house_context.py
 Build context (parameter bundle) for the house shape grammar.
 
 Pure data — no GDPC or builder dependencies beyond the type annotation.
-
-Changes from original
----------------------
-  • `editor` is now a required constructor argument, injected at build time
-    by HouseGrammar._place().  It is no longer an Any field that defaults to
-    None and is set after the fact — that pattern hid missing-editor bugs
-    until the first placeBlock call.
-
-  • Derived properties (base_y, wall_top_y, ceiling_y, etc.) are unchanged.
+All block placements accumulate into a BlockBuffer; nothing touches the world directly.
 """
 from __future__ import annotations
 
@@ -20,7 +12,7 @@ from dataclasses import dataclass, field
 
 from gdpc import Block
 
-from data.biome_palettes import BiomePalette, palette_get
+from palette.palette_system import PaletteSystem, palette_get
 from world_interface.block_buffer import BlockBuffer
 
 
@@ -51,7 +43,8 @@ class Ctx:
     upper_h:   int       # height in blocks (0 when has_upper is False)
 
     # Roof
-    roof_type: str       # "pyramid" | "gabled" | "cross"
+    roof_type:  str            # "pyramid" | "gabled" | "cross"
+    cross_side: str | None     # force a specific arm side for "cross" roofs: "north"|"south"|"east"|"west"
 
     # Optional features
     has_chimney: bool
@@ -61,7 +54,7 @@ class Ctx:
     door_face: int
 
     # Materials
-    palette: BiomePalette
+    palette: PaletteSystem
 
     # Write target — all block placements go here.
     buffer: BlockBuffer = field(default_factory=BlockBuffer)

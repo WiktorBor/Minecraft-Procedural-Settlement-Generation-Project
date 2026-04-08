@@ -36,7 +36,7 @@ Usage
         [--model-out models/house_ngram.pkl] \
         [--dry-run]
 
-    Pass --dry-run to use NullEditor (no Minecraft connection required).
+    Pass --dry-run to skip saving the model to disk.
 """
 from __future__ import annotations
 
@@ -49,25 +49,6 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# NullEditor — lets the script run without a live Minecraft connection
-# ---------------------------------------------------------------------------
-
-class NullEditor:
-    """
-    Minimal Editor stand-in for dry-run mode.
-
-    Accepts placeBlock calls and discards them. All other attribute access
-    raises AttributeError so real Editor-only code surfaces bugs early.
-    """
-
-    def placeBlock(self, position, block) -> None:
-        pass  # intentionally discard
-
-    def __getattr__(self, name: str):
-        raise AttributeError(
-            f"NullEditor does not support '{name}' — use a real Editor for live builds."
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +142,8 @@ def run(
     dry_run:      bool,
     palette_name: str,
 ) -> None:
-    from data.biome_palettes import get_biome_palette
+    from dataclasses import replace
+    from palette.palette_system import palette_get
     from structures.house.house_ngram_scorer import (
         BlockSequenceRecorder,
         NgramLanguageModel,
@@ -170,11 +152,10 @@ def run(
     from structures.house.house_scorer import HouseScorer
     from structures.house.house_grammar import HouseGrammar
 
-    palette   = get_biome_palette(palette_name)
+    palette   = palette_get(palette_name)
     rf_scorer = HouseScorer.load(
         Path(__file__).parent.parent.parent / "models" / "house_scorer.pkl"
     )
-    editor = NullEditor() if dry_run else _get_live_editor()
 
     # Split evenly: first half good, second half explicitly bad.
     # This guarantees structurally distinct sequences so the n-gram model
@@ -185,23 +166,23 @@ def run(
 
     logger.info("Running %d grammar builds (dry_run=%s)…", n_houses, dry_run)
 
+    grammar = HouseGrammar(palette, scorer=rf_scorer)
+
     for i in range(n_houses):
         force_bad = (i >= n_good_target)
         plot      = _random_plot()
-        recorder  = BlockSequenceRecorder(editor)
-        grammar   = HouseGrammar(recorder, palette, scorer=rf_scorer)
+        recorder  = BlockSequenceRecorder()
 
         try:
-            ctx    = grammar._make_context(
-                plot,
+            ctx       = grammar._make_context(
+                plot.x, plot.y, plot.z, plot.width, plot.depth,
                 rotation=random.choice([0, 90, 180, 270]),
                 force_bad=force_bad,
             )
-            params = grammar._ctx_to_params(ctx)
-            grammar._place(ctx)
+            probe_ctx = replace(ctx, buffer=recorder)
+            grammar._do_place(probe_ctx)
         except Exception as exc:
             logger.warning("Build %d failed: %s", i, exc)
-            recorder.reset()
             continue
 
         seq = recorder.finish()
@@ -231,13 +212,6 @@ def run(
     scorer = HouseNgramScorer(model=model, blend_weight=blend_weight)
     scorer.save(model_out)
     logger.info("Model saved to %s", model_out)
-
-
-def _get_live_editor():
-    from gdpc.editor import Editor
-    editor = Editor(buffering=True)
-    editor.checkConnection()
-    return editor
 
 
 # ---------------------------------------------------------------------------

@@ -84,6 +84,16 @@ class PatchSelector:
 
         candidate_mask = valid_mask & high_score_mask
 
+        # Exclude cells too close to the build-area boundary.  Structures can
+        # have overhangs (roof eaves, bridge arches) that extend a few blocks
+        # beyond their plot origin; keeping at least edge_buf cells of clearance
+        # ensures the full settlement stays inside the GDPC build area.
+        edge_buf = cfg.build_area_edge_buffer
+        if edge_buf > 0:
+            border = np.zeros_like(candidate_mask, dtype=bool)
+            border[edge_buf:-edge_buf, edge_buf:-edge_buf] = True
+            candidate_mask = candidate_mask & border
+
         labeled, num_features = ndimage_label(candidate_mask)
         if num_features == 0:
             raise ValueError("No contiguous build locations found.")
@@ -124,9 +134,9 @@ class PatchSelector:
                 return lo, hi
             centre = (lo + hi) // 2
             half   = target // 2
-            lo     = max(0, centre - half)
-            hi     = min(limit - 1, lo + target - 1)
-            lo     = max(0, hi - target + 1)
+            lo     = max(edge_buf, centre - half)
+            hi     = min(limit - edge_buf - 1, lo + target - 1)
+            lo     = max(edge_buf, hi - target + 1)
             return lo, hi
 
         x_min = z_min = x_max = z_max = 0

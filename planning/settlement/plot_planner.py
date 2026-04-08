@@ -153,7 +153,7 @@ class PlotPlanner:
             min_dist = self.config.min_plot_distance
             if   dtype == "residential": min_dist = max(6, min_dist // 2)
             elif dtype == "farming":     min_dist = int(min_dist * 1.5)
-            elif dtype == "forest":      min_dist = int(min_dist * 2)
+            elif dtype == "forest":      min_dist = int(min_dist * 1.5)
 
             xs, zs = np.where(district_mask)
             x_min, x_max = int(xs.min()), int(xs.max())

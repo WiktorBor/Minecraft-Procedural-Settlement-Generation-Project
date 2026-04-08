@@ -23,7 +23,7 @@ from typing import Generator
 
 from gdpc import Block
 
-from data.biome_palettes import BiomePalette, palette_get
+from palette.palette_system import PaletteSystem, palette_get
 from world_interface.block_buffer import BlockBuffer
 
 
@@ -63,7 +63,7 @@ class BuildContext:
                Used together with origin to compute rotated coordinates.
     """
     buffer:   BlockBuffer
-    palette:  BiomePalette
+    palette:  PaletteSystem
     rotation: int                         = 0
     origin:   tuple[int, int, int] | None = None
     size:     tuple[int, int]             = (1, 1)

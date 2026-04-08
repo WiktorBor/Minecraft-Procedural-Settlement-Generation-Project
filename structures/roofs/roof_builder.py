@@ -25,7 +25,7 @@ import random
 
 from gdpc import Block
 
-from data.biome_palettes import palette_get
+from palette.palette_system import palette_get
 from structures.base.build_context import BuildContext
 
 
@@ -70,7 +70,7 @@ class _RoofCorners:
     @property
     def span(self) -> int:
         """Shorter horizontal dimension — determines peak height."""
-        return self.rw if self.pitch_along_x else self.rd
+        return self.rw if self.rw < self.rd else self.rd
 
     @property
     def length(self) -> int:
@@ -113,6 +113,7 @@ def build_roof(
     x: int, y: int, z: int,
     w: int, d: int,
     roof_type: str = "gabled",
+    cross_side: str | None = None,
 ) -> None:
     """
     Build a roof of the given type at (x, y, z) over a w×d footprint.
@@ -121,16 +122,18 @@ def build_roof(
     A 1-block overhang is applied automatically on all sides.
 
     Args:
-        ctx:       Build context carrying editor + palette.
-        x, y, z:   Anchor corner of the building footprint (NOT the overhang).
-        w, d:      Building footprint dimensions (walls, not including overhang).
-        roof_type: "pyramid", "gabled", or "cross".
+        ctx:        Build context carrying editor + palette.
+        x, y, z:    Anchor corner of the building footprint (NOT the overhang).
+        w, d:       Building footprint dimensions (walls, not including overhang).
+        roof_type:  "pyramid", "gabled", or "cross".
+        cross_side: For "cross" roofs, force a specific arm side
+                    ("north"|"south"|"east"|"west"). None = random.
     """
     rc = _RoofCorners(x, y, z, w, d)
     if roof_type == "pyramid":
         _build_pyramid(ctx, x, y, z, w, d)
     elif roof_type == "cross":
-        _build_cross_gabled(ctx, rc)
+        _build_cross_gabled(ctx, rc, side=cross_side)
     else:
         build_gabled_roof(ctx, rc)
 
@@ -178,7 +181,7 @@ def _build_pyramid(
     ridge_y = base_y + max_layers
     for px in range(x0 + max_layers, x1 - max_layers + 1):
         for pz in range(z0 + max_layers, z1 - max_layers + 1):
-            ctx.place_block((px, ridge_y, pz), Block(mat_slab, {"type": "top"}))
+            ctx.place_block((px, ridge_y, pz), Block(mat_slab, {"type": "bottom"}))
 
 # ---------------------------------------------------------------------------
 # Gabled
@@ -278,22 +281,39 @@ def _build_gable_ends(
 # Cross-gabled
 # ---------------------------------------------------------------------------
 
-def _build_cross_gabled(ctx: BuildContext, rc: _RoofCorners) -> None:
+def _build_cross_gabled(
+    ctx: BuildContext,
+    rc: _RoofCorners,
+    side: str | None = None,
+) -> None:
     """
     Cross-gabled roof: main gable span + one or two perpendicular dormer arms.
+
+    side — if given, build exactly that one arm ("north","south","east","west").
+           If None, randomly pick one or both valid sides.
     """
     peak = rc.span // 2
     build_gabled_roof(ctx, rc)
 
-    sides    = ["east", "west"] if rc.pitch_along_x else ["south", "north"]
-    to_build = sides if random.random() < 0.6 else [random.choice(sides)]
-    for side in to_build:
+    if side is not None:
         _build_cross_arm(ctx, rc, peak, side)
-
+    else:
+        sides    = ["east", "west"] if rc.pitch_along_x else ["south", "north"]
+        to_build = sides if random.random() < 0.6 else [random.choice(sides)]
+        for s in to_build:
+            _build_cross_arm(ctx, rc, peak, s)
 
 def _cross_arm_params(rc: _RoofCorners, peak: int, side: str) -> dict:
-    """Return geometry parameters for one cross-arm based on pitch axis and side."""
-    if not rc.pitch_along_x:
+    """Return geometry parameters for one cross-arm based on the requested side.
+
+    Dispatch is on the cardinal direction of the arm, NOT on rc.pitch_along_x.
+    The arm direction is determined by the caller (bridge_side or random choice)
+    and may be perpendicular to the main ridge or parallel — both are valid
+    cross-gabled shapes.  Dispatching on pitch_along_x caused wrong-axis arms
+    whenever bridge_side didn't match the auto-selected main-ridge orientation.
+    """
+    if side in ("south", "north"):
+        # Arm extends along Z (south or north). Perpendicular span is X.
         south = (side == "south")
         return dict(
             inner_start    = rc.rz1 - 1  if south else rc.rz0,
@@ -313,6 +333,7 @@ def _cross_arm_params(rc: _RoofCorners, peak: int, side: str) -> dict:
             arm_rc         = _ArmRC(rc.mid_x - peak, rc.mid_x + peak + 1, rc.rz0, rc.rz0 + 2 * peak + 2, rc.ry),
         )
     else:
+        # Arm extends along X (east or west). Perpendicular span is Z.
         east = (side == "east")
         return dict(
             inner_start    = rc.rx1 - 1  if east else rc.rx0,
@@ -354,7 +375,10 @@ def _build_cross_arm(
 
     p = _cross_arm_params(rc, arm_peak, side)
 
-    for layer in range(arm_peak + 1):
+    # Match main gable parity: odd span gets one extra layer (the ridge row);
+    # even span stops at arm_peak - 1, same as build_gabled_roof's range(peak).
+    arm_layers = arm_peak + (1 if rc.span % 2 == 1 else 0)
+    for layer in range(arm_layers):
         arm_y  = rc.ry + layer
         inner  = p["inner_start"] + p["inner_step"] * layer
         perp_a = p["perp_a"](layer)

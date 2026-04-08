@@ -31,12 +31,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from gdpc import Editor, Block
-from gdpc.vector_tools import ivec3
 
 from data.biome_palettes import get_biome_palette
 from data.settlement_entities import Plot
 from structures.house.house_grammar import HouseGrammar
-from structures.house.house_scorer import HouseParams
 from world_interface.structure_placer import StructurePlacer
 
 logging.basicConfig(
@@ -267,7 +265,7 @@ def main() -> None:
         logger.info("Area cleared.")
 
     # --- build the house ---
-    grammar = HouseGrammar(None, palette=palette)
+    grammar = HouseGrammar(palette=palette)
 
     if FORCE_PARAMS:
         logger.info("Applying forced parameters: %s", FORCE_PARAMS)

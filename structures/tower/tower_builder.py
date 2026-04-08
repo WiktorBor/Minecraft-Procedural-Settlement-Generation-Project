@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from gdpc import Block
 
-from data.biome_palettes import BiomePalette, palette_get
+from palette.palette_system import PaletteSystem, palette_get
 from structures.base.build_context import BuildContext
 from world_interface.block_buffer import BlockBuffer
 from structures.base.primitives import (
@@ -39,8 +39,7 @@ class TowerBuilder:
 
     def __init__(
         self,
-        _editor,
-        palette: BiomePalette,
+        palette: PaletteSystem,
         height: int = 8,
         width: int = 5,
         with_door: bool = False,

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from gdpc import Block
 
-from data.biome_palettes import palette_get
+from palette.palette_system import palette_get
 from structures.base.build_context import BuildContext
 
 
@@ -462,3 +462,7 @@ def build_belfry_face(
             ctx.place_block((px, arch_y, pz), Block(stair_mat, stair_right))
         else:
             ctx.place_block((px, arch_y, pz), Block(plank_mat))
+
+        # Two blocks of air below the arch opening
+        ctx.place_block((px, arch_y - 1, pz), Block("minecraft:air"))
+        ctx.place_block((px, arch_y - 2, pz), Block("minecraft:air"))

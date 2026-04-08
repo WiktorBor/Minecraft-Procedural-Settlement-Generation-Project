@@ -24,7 +24,7 @@ import logging
 
 from gdpc import Block
 
-from data.biome_palettes import BiomePalette, palette_get
+from palette.palette_system import PaletteSystem, palette_get
 from data.settlement_entities import Plot
 from structures.base.build_context import BuildContext
 from world_interface.block_buffer import BlockBuffer
@@ -84,7 +84,7 @@ class Dock:
     def build(
         self,
         plot: Plot,
-        palette: BiomePalette,
+        palette: PaletteSystem,
         rotation: int = 0,
     ) -> BlockBuffer:
         x, y, z = plot.x, plot.y, plot.z

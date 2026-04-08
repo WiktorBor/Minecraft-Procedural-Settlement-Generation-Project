@@ -26,7 +26,7 @@ import random
 
 from gdpc import Block
 
-from data.biome_palettes import palette_get
+from palette.palette_system import palette_get
 from structures.base.primitives import build_ceiling as prim_ceiling
 from structures.base.primitives import build_foundation as prim_foundation
 from structures.house.house_context import Ctx
