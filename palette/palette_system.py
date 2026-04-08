@@ -1,6 +1,6 @@
 from __future__ import annotations
 import random
-from typing import Any, Dict, TypedDict
+from typing import Any, Dict
 from collections import deque
 from palette.material_library import MATERIAL_LIBRARY
 import logging
@@ -11,40 +11,6 @@ paletteSystem returns materials for buildings and roads based on biome archetype
 Handle weighted variennts and anti-clustering district.
 Roads are returned per-archetyper and main/path distinction.
 """
-
-class BiomePalette(TypedDict, total=False):
-    """
-    Block IDs for each material role in a biome.
-
-    Required keys: wall, roof, floor, foundation, path, accent.
-    Optional keys: wall_secondary, light, window, door, fence,
-                   roof_slab, smoke, moss, ceiling_slab, accent_beam,
-                   interior_light.
-    """
-    # Core roles (always present)
-    wall:        str
-    roof:        str
-    floor:       str
-    foundation:  str
-    path:        str
-    accent:      str
-
-    # Optional roles (accessed via palette_get with a default)
-    wall_secondary: str
-    light:          str
-    window:         str
-    door:           str
-    fence:          str
-    roof_slab:      str
-    smoke:          str
-    moss:           str
-    ceiling_slab:   str
-    accent_beam:    str
-    interior_light: str
-    banner:         str
-    roof_block:     str
-    path_edge:      str
-    path_slab:      str
 
 # DISTRICT MEMORY - prevent repetition and enforece coherence
 class DistrictMemory:
@@ -172,6 +138,7 @@ class PaletteSystem:
         palette = {
             "archetype": archetype,
             "wall": f"minecraft:{primary_wall}",
+            "floor": f"minecraft:{lib['structure']['floor']}",
             "foundation": f"minecraft:{lib['structure']['foundation']}",
             "accent": f"minecraft:{accent}",
             "roof_block": f"minecraft:{lib['structure']['roof']['block']}",
