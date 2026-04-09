@@ -1,7 +1,8 @@
 from __future__ import annotations
 import random
-from typing import Any, Dict
+from typing import Any, Dict, List
 from collections import deque
+from enum import Enum
 from palette.material_library import MATERIAL_LIBRARY
 import logging
 
@@ -12,10 +13,24 @@ Handle weighted variennts and anti-clustering district.
 Roads are returned per-archetyper and main/path distinction.
 """
 
+class MaterialRole(Enum):
+    """Categories of materials in buildings."""
+    CORE = "structural"      # Walls, floors, foundation
+    ACCENT = "decorative"    # Logs, trim, highlights
+    UTILITY = "functional"   # Doors, windows, fences
+    LIGHT = "atmospheric"    # Lanterns, glowstone
+
+class StructurePersonality(Enum):
+    """Building complexity and material distribution."""
+    SIMPLE = {"core": 0.80, "accent": 0.10, "utility": 0.10, "light": 0.00}
+    STANDARD = {"core": 0.60, "accent": 0.20, "utility": 0.15, "light": 0.05}
+    DECORATED = {"core": 0.50, "accent": 0.30, "utility": 0.15, "light": 0.05}
+    ORNATE = {"core": 0.40, "accent": 0.40, "utility": 0.15, "light": 0.05}
+    
 # DISTRICT MEMORY - prevent repetition and enforece coherence
 class DistrictMemory:
     """Tracks materials used in district for anti-clustering"""
-    def __init__(self, district_id: int, history_length: int = 3):
+    def __init__(self, district_id: int, history_length: int = 5):
         self.district_id = district_id
         self.history = deque(maxlen=history_length)
 
@@ -33,6 +48,59 @@ class PaletteSystem:
     def __init__(self):
         self.district_memories: Dict[int, DistrictMemory] = {}
         self.MATERIAL_LIBRARY = MATERIAL_LIBRARY
+        self.MATERIAL_AFFINITY = self._build_affinity_graph()
+
+    def _build_affinity_graph(self) -> Dict[str, Dict[str, float]]:
+        """
+        Build a compatibility graph between materials.
+        Higher score = better together (0-1 scale)
+        """
+        return {
+            # Stone materials are compatible with warm wood
+            "stone_bricks": {
+                "stripped_oak_log": 0.95,
+                "oak_log": 0.93,
+                "dark_oak_log": 0.90,
+                "spruce_log": 0.70,
+                "jungle_log": 0.65,
+                "prismarine_bricks": 0.30,
+            },
+            
+            # Sandstone pairs with acacia
+            "sandstone": {
+                "acacia_log": 0.95,
+                "stripped_acacia_log": 0.93,
+                "oak_log": 0.70,
+            },
+            
+            # Mossy stone with jungle materials
+            "mossy_stone_bricks": {
+                "jungle_log": 0.95,
+                "mangrove_log": 0.92,
+                "oak_log": 0.85,
+            },
+            
+            # Prismarine with oak/spruce
+            "prismarine_bricks": {
+                "oak_log": 0.90,
+                "spruce_log": 0.88,
+            },
+            
+            # Deepslate with spruce
+            "deepslate_bricks": {
+                "spruce_log": 0.95,
+                "stripped_spruce_log": 0.93,
+            },
+            
+            # Red sandstone with dark oak
+            "red_sandstone": {
+                "dark_oak_log": 0.95,
+                "stripped_dark_oak_log": 0.93,
+            },
+            
+            # Default: assume medium compatibility
+            "_default": 0.60,
+        }
 
     def generate(self, analysis, districts) -> Dict[int, Any]:
         """
@@ -83,11 +151,13 @@ class PaletteSystem:
     def _get_weighted_variant(self, variant_data: Any) -> str:
         """Pick a material based on weights"""
         if isinstance(variant_data, dict):
-            return random.choices(
-                variant_data["variants"], 
-                weights=variant_data.get("weights"), 
-                k=1
-            )[0]
+            if "variants" in variant_data:
+                return random.choices(
+                    variant_data["variants"], 
+                    weights=variant_data.get("weights"), 
+                    k=1
+                )[0]
+            return variant_data
         # List: ["stone", "cobblestone", "andesite"]
         if isinstance(variant_data, list):
             return random.choice(variant_data)
@@ -132,26 +202,58 @@ class PaletteSystem:
 
         # Weighted primary wall selection with anti-clustering
         primary_wall = self._get_weighted_variant(lib["structure"]["primary_wall"])
+        roof_set = self._get_weighted_variant(lib["structure"]["roof"])
         # Anti-clustering: re-roll if same as last few
         attempts = 0
-        while district_memory.is_overused(primary_wall) and attempts < 5:
+        while district_memory.is_overused(primary_wall) and attempts < 3:
             primary_wall = self._get_weighted_variant(lib["structure"]["primary_wall"])
+            roof_set = self._get_weighted_variant(lib["structure"]["roof"])
             attempts += 1
         district_memory.add_building(primary_wall)
+        district_memory.add_building(roof_set)
 
         accent_raw = lib["structure"]["accent"]
-        accent = self._get_weighted_variant(accent_raw)
-
+        accent = self._pick_compatible_material(primary_wall, accent_raw)
+        is_wood = any(x in accent for x in ["log", "stem", "wood", "hyphae"])
+        accent_beam = f"minecraft:stripped_{accent}" if is_wood and "stripped" not in accent else f"minecraft:{accent}"
         # Compose base palette
         palette = {
             "archetype": archetype,
+            
+            # Role: CORE (structural)
+            "role:core": [
+                f"minecraft:{primary_wall}",
+                f"minecraft:{lib['structure']['foundation']}",
+                f"minecraft:{roof_set['label']}",
+            ],
+            
+            # Role: ACCENT (decorative)
+            "role:accent": [
+                f"minecraft:{accent}",
+                accent_beam,
+            ],
+            
+            # Role: UTILITY (functional)
+            "role:utility": [
+                "minecraft:oak_door",
+                "minecraft:oak_fence",
+                f"minecraft:{roof_set['slab']}",
+            ],
+            
+            # Role: LIGHT (atmospheric)
+            "role:light": [
+                "minecraft:lantern",
+                "minecraft:soul_lantern" if archetype == "FROZEN" else "minecraft:lantern",
+            ],
+            
+            # Flat structure for backward compatibility
             "wall": f"minecraft:{primary_wall}",
             "foundation": f"minecraft:{lib['structure']['foundation']}",
             "accent": f"minecraft:{accent}",
-            "roof_block": f"minecraft:{lib['structure']['roof']['block']}",
-            "roof_stairs": f"minecraft:{lib['structure']['roof']['stairs']}",
-            "roof_slab": f"minecraft:{lib['structure']['roof']['slab']}",
-            "accent_beam": f"minecraft:stripped_{accent}_log" if ("log" in accent and "_log" not in accent) else f"minecraft:{accent}_log" if "log" not in accent else f"minecraft:{accent}",
+            "roof_block": f"minecraft:{roof_set['block']}",
+            "roof_stairs": f"minecraft:{roof_set['stairs']}",
+            "roof_slab": f"minecraft:{roof_set['slab']}",
+            "accent_beam": accent_beam,
         }
 
         # Add decor with safe list handling
@@ -184,6 +286,40 @@ class PaletteSystem:
                 palette[k] = f"minecraft:{v}"
 
         return palette
+    
+    def _pick_compatible_material(self, primary_wall: str, accent_options) -> str:
+        """Pick accent material based on affinity with wall."""
+        accent_list = accent_options if isinstance(accent_options, list) else [accent_options]
+        
+        # Get affinity scores for this wall
+        affinity = self.MATERIAL_AFFINITY.get(primary_wall, {})
+        default_affinity = self.MATERIAL_AFFINITY.get("_default", 0.6)
+        
+        # Score each accent option
+        scored_options = []
+        for accent in accent_list:
+            score = affinity.get(accent, default_affinity)
+            scored_options.append((accent, score))
+        
+        # Pick weighted by score
+        accents, scores = zip(*scored_options)
+        selected = random.choices(accents, weights=scores, k=1)[0]
+        
+        logger.debug(f"[affinity] wall={primary_wall} → accent={selected} (score={affinity.get(selected, default_affinity)})")
+        
+        return selected
+    
+    # get materials by role for buildings
+    def get_materials_by_role(self, palette: dict, role: MaterialRole) -> List[str]:
+        """
+        Get all materials for a specific role.
+        
+        Usage:
+            core_materials = palette_system.get_materials_by_role(palette, MaterialRole.CORE)
+            random_core = random.choice(core_materials)
+        """
+        key = f"role:{role.name.lower()}"
+        return palette.get(key, [palette.get("wall", "minecraft:stone")])
     
     #4 road components :stairs/slabs; main/path
     def get_road_component(self, biome_name: str, is_main: bool, component_type: str = "base", existing_block: str = None) -> str:
@@ -245,3 +381,104 @@ def palette_get(palette: dict, key: str,default: str = "minecraft:stone") -> str
     """Safe get for palette with default fallback."""
     return palette.get(key, default)
     
+# if __name__ == "__main__":
+#     # Initialize the system
+#     ps = PaletteSystem()
+#     # No need to assign MATERIAL_LIBRARY, it's already imported
+    
+#     print("--- REAL-DATA PALETTE VALIDATION ---")
+
+#     # 1. Test Wood-Stripping for all Archetypes
+#     # -------------------------------------------------------------------------
+#     print("\n[Test 1] Wood Stripping & Accent Beams")
+#     test_cases = [
+#         ("minecraft:plains", "TEMPERATE"), 
+#         ("minecraft:frozen_ocean", "FROZEN"),
+#         ("minecraft:jungle", "LUSH"),
+#         ("minecraft:savanna", "SAVANNA")
+#     ]
+
+#     for biome, arch in test_cases:
+#         pal = ps.create_palette(district_id=101, biome_name=biome)
+#         accent = pal["accent"]
+#         beam = pal["accent_beam"]
+        
+#         # Verify result
+#         print(f"Archetype {arch:9} | Accent: {accent:20} | Beam: {beam}")
+        
+#         if any(w in accent for w in ["log", "stem", "wood", "hyphae"]):
+#             if "stripped" not in accent:
+#                 assert "stripped" in beam, f"Error: {accent} should have a stripped beam!"
+    
+#     # 2. Test Road Component Formatting (The "Plural" Logic)
+#     # -------------------------------------------------------------------------
+#     print("\n[Test 2] Road Component Conversions")
+#     # Testing specific tricky strings from your library
+#     road_formatting_tests = [
+#         ("TEMPERATE", "stone_bricks", "stone_brick_slab"), # bricks -> brick
+#         ("AQUATIC", "oak_planks", "oak_slab"),            # planks -> slab
+#         ("FROZEN", "deepslate_bricks", "deepslate_brick_slab"),
+#         ("ARID", "smooth_sandstone", "smooth_sandstone_slab")
+#     ]
+
+#     for arch, base, expected_slab in road_formatting_tests:
+#         # Using existing_block to test the string transformation logic specifically
+#         res = ps.get_road_component(arch.lower(), is_main=True, component_type="slab", existing_block=base)
+#         print(f"Base: {base:20} -> Slab: {res}")
+#         assert res == f"minecraft:{expected_slab}", f"Formatting Error: Expected {expected_slab}, got {res}"
+
+#     # 3. Test Anti-Clustering (District Diversity)
+#     # -------------------------------------------------------------------------
+#     print("\n[Test 3] District Variety (Anti-Clustering)")
+#     walls_used = []
+#     # Generate 5 buildings in the same district
+#     for _ in range(5):
+#         pal = ps.create_palette(district_id=5, biome_name="minecraft:plains")
+#         walls_used.append(pal["wall"])
+    
+#     unique_walls = set(walls_used)
+#     print(f"Walls chosen in District 5: {walls_used}")
+#     if len(ps.MATERIAL_LIBRARY["TEMPERATE"]["structure"]["primary_wall"]["variants"]) > 1:
+#         assert len(unique_walls) > 1, "Variety Error: District Memory is not cycling materials!"
+
+#     print("\n--- ALL REAL-DATA TESTS PASSED ---")
+
+def test_roof_diversity():
+    # Initialize your system (assumes class name is PaletteSystem)
+    ps = PaletteSystem()
+    
+    test_district_id = 101
+    biome = "minecraft:forest"
+    house_count = 10
+    
+    print(f"--- Testing Roof Diversity for {house_count} Houses ---")
+    print(f"Biome: {biome} | District: {test_district_id}\n")
+    
+    results = []
+    
+    for i in range(1, house_count + 1):
+        # This MUST be called inside the loop to trigger a new random choice
+        pal = ps.create_palette(district_id=test_district_id, biome_name=biome)
+        
+        wall = pal.get("wall", "N/A").replace("minecraft:", "")
+        roof = pal.get("roof_block", "N/A").replace("minecraft:", "")
+        
+        results.append(roof)
+        print(f"House {i:02d}: Wall [{wall:15}] | Roof Set: [{roof}]")
+
+    # Statistical Summary
+    unique_roofs = set(results)
+    print(f"\n--- Analysis ---")
+    print(f"Unique Roof Types Found: {len(unique_roofs)}")
+    for r_type in unique_roofs:
+        count = results.count(r_type)
+        print(f"- {r_type}: {count} houses ({(count/house_count)*100:.0f}%)")
+
+    if len(unique_roofs) > 1:
+        print("\n✅ PASS: Roof diversity is functioning.")
+    else:
+        print("\n❌ FAIL: Only one roof type detected. Check if selection logic is inside the loop.")
+
+# Run the test
+if __name__ == "__main__":
+    test_roof_diversity()
