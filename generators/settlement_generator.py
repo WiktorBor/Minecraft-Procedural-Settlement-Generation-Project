@@ -13,14 +13,13 @@ from analysis.world_analysis import WorldAnalyser
 from data.configurations import TerrainConfig, SettlementConfig
 from data.settlement_entities import Building, Plot, RoadCell
 from data.settlement_state import SettlementState
-from structures.misc.square_centre import SquareCentre
 from utils.astar import find_path
 from utils.walkable_grid import build_cost_grid
 from palette.palette_system import PaletteSystem
 from planning.settlement_planner import SettlementPlanner
-from structures.base.structure_selector import StructureSelector
+from structures.base.build_context import BuildContext
+from structures.structure_selector import StructureSelector
 from structures.decoration.district.district_marker import DistrictMarker
-from structures.fortification.fortification_builder import FortificationBuilder
 from world_interface.block_buffer import BlockBuffer
 from world_interface.road_placer import RoadBuilder
 from world_interface.structure_placer import StructurePlacer
@@ -80,6 +79,8 @@ class SettlementGenerator:
         logger.info("  ✓ Per-district palettes generated.")
 
         master_buffer = BlockBuffer()
+        # Initialize a shared BuildContext for the master settlement buffer
+        self.ctx = BuildContext(buffer=master_buffer, palette=default_palette)
 
         # --- Phase 3a: Central plaza ---
         plaza_radius = state.plaza_radius
@@ -97,9 +98,9 @@ class SettlementGenerator:
                 x=cx - plaza_radius, z=cz - plaza_radius,
                 width=plaza_radius * 2, depth=plaza_radius * 2, y=cy,
             )
-            plaza_buf = SquareCentre().build(plaza_plot, palette=default_palette)
-            if plaza_buf is not None:
-                master_buffer.merge(plaza_buf)
+            from structures.orchestrators.plaza import build_square_centre
+            # Build directly into the master buffer via context
+            build_square_centre(self.ctx, plaza_plot)
 
             road_width  = self.settlement_config.road_width
             ring_radius = plaza_radius + road_width + 1
@@ -116,14 +117,16 @@ class SettlementGenerator:
             state.add_road_cells(ring_cells)
             logger.info("  ✓ Plaza + ring road placed (%d cells).", len(ring_cells))
 
-        # --- Phase 3b: District markers (fountains / docks) ---
+        # --- Phase 3b: District markers (fountains / wells / docks) ---
         logger.info("[Phase 3b] Placing district markers...")
+        
+        # FIX: Pass self.ctx instead of palette
         district_marker = DistrictMarker(
             analysis=analysis,
-            palette=default_palette,
+            ctx=self.ctx,
         )
-        marker_buffer, fountain_cells = district_marker.build(state.districts)
-        master_buffer.merge(marker_buffer)
+        # build() now writes to master_buffer via ctx and returns ONLY taken cells
+        fountain_cells = district_marker.build(state.districts)
         state.add_taken(fountain_cells)
 
         # --- Phase 3c: Central landmark tower ---
@@ -166,8 +169,6 @@ class SettlementGenerator:
         area = analysis.best_area
 
         for idx, plot in enumerate(state.plots, 1):
-            # Try to resolve district from the plot centre (more reliable than
-            # the corner which may land on a road or border cell).
             pcx = plot.x + plot.width  // 2
             pcz = plot.z + plot.depth  // 2
             try:
@@ -176,8 +177,6 @@ class SettlementGenerator:
             except (ValueError, IndexError):
                 district_idx = -1
 
-            # If map lookup still gave nothing, fall back to the type stored on
-            # the plot at planning time.
             if district_idx not in selectors:
                 dtype = (plot.type or "residential").strip().lower()
                 district_idx = next(
@@ -204,7 +203,6 @@ class SettlementGenerator:
                 )
                 continue
 
-            # Clamp plot to the configured hard maximum before building.
             max_w = self.settlement_config.max_plot_width
             max_d = self.settlement_config.max_plot_depth
             if plot.width > max_w or plot.depth > max_d:
@@ -220,9 +218,6 @@ class SettlementGenerator:
                 idx, len(state.plots), template_key, plot.x, plot.z,
             )
 
-            # Level only the structure's actual footprint, not the full plot.
-            # House-grammar templates build within a 7-11 block window that
-            # can be smaller than the plot; all other builders fill the plot.
             struct_w, struct_d = selector.effective_footprint(plot, template_key)
             if struct_w < plot.width or struct_d < plot.depth:
                 level_target = replace(plot, width=struct_w, depth=struct_d)
@@ -230,24 +225,12 @@ class SettlementGenerator:
                 plot.y = level_target.y
             else:
                 level_plot_area(self.editor, analysis, plot)
-            # Flush leveling blocks before building so they're committed
-            # to Minecraft independently of the structure batch.
+            
             self.editor.flushBuffer()
 
+            # Pass context to selectors where refactored, otherwise merge results
             buf = selector.build(plot, template_key)
-            if buf is None:
-                logger.warning(
-                    "  Builder '%s' failed at (%d,%d) size=%dx%d facing=%s "
-                    "— check ERROR logs from structures.base.structure_selector.",
-                    template_key, plot.x, plot.z,
-                    plot.width, plot.depth, plot.facing,
-                )
-            elif len(buf) == 0:
-                logger.warning(
-                    "  Builder '%s' returned empty buffer at (%d,%d) — skipping.",
-                    template_key, plot.x, plot.z,
-                )
-            else:
+            if buf is not None and len(buf) > 0:
                 master_buffer.merge(buf)
 
             state.add_building(Building(
@@ -270,12 +253,14 @@ class SettlementGenerator:
 
         # --- Phase 6: Fortification ---
         logger.info("[Phase 6] Building fortification...")
-        fort_buf = FortificationBuilder(
-            analysis=analysis,
-            palette=default_palette,
-            config=self.settlement_config,
-        ).build(state.buildings)
-        master_buffer.merge(fort_buf)
+        from structures.orchestrators.fortification import build_fortification_settlement
+        # Reuse existing master context
+        wall_top_y = int(np.median(analysis.heightmap_ground)) + 12
+        build_fortification_settlement(
+            self.ctx, default_palette,
+            analysis.heightmap_ground, analysis.best_area,
+            wall_top_y, buildings=state.buildings,
+        )
         logger.info("  ✓ Fortification placed.")
 
         # --- Phase 7: Flush via StructurePlacer ---
@@ -418,11 +403,17 @@ class SettlementGenerator:
 
         try:
             if tower_type == "spire":
-                from structures.misc.spire_tower import SpireTower
-                tower_buf = SpireTower().build(plot, palette, analysis=analysis)
+                from structures.orchestrators.spire_tower import build_spire_tower
+                tower_buf = BlockBuffer()
+                tower_ctx = BuildContext(buffer=tower_buf, palette=palette)
+                build_spire_tower(tower_ctx, plot, palette)
             else:
-                from structures.misc.clock_tower import ClockTower
-                tower_buf = ClockTower().build(plot, palette)
+                from structures.orchestrators.tower import build_tower
+                tower_buf = build_tower(
+                    palette, plot.x, plot.y, plot.z,
+                    plot.width, 12, plot.depth,
+                    structure_role="clock_tower",
+                )
         except Exception:
             logger.error(
                 "[Phase 3a.6] Central tower builder failed at (%d, %d).",

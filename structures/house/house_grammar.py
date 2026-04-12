@@ -44,7 +44,7 @@ from structures.house.house_context import Ctx
 from structures.house.house_detail_builder import DetailBuilder
 from structures.house.house_ngram_scorer import BlockSequenceRecorder, HouseNgramScorer
 from structures.house.house_scorer import HouseScorer
-from structures.roofs.roof_builder import build_roof
+from structures.orchestrators.primitives.roof import build_roof
 from world_interface.block_buffer import BlockBuffer
 
 logger = logging.getLogger(__name__)

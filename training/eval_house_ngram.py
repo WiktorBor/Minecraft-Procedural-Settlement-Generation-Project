@@ -143,7 +143,7 @@ def run(
     palette_name: str,
 ) -> None:
     from dataclasses import replace
-    from palette.palette_system import palette_get
+    from palette.palette_system import get_biome_palette
     from structures.house.house_ngram_scorer import (
         BlockSequenceRecorder,
         NgramLanguageModel,
@@ -152,7 +152,7 @@ def run(
     from structures.house.house_scorer import HouseScorer
     from structures.house.house_grammar import HouseGrammar
 
-    palette   = palette_get(palette_name)
+    palette   = get_biome_palette(palette_name)
     rf_scorer = HouseScorer.load(
         Path(__file__).parent.parent.parent / "models" / "house_scorer.pkl"
     )

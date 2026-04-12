@@ -1,106 +1,60 @@
 from __future__ import annotations
-
 import logging
+import random
 
 from data.analysis_results import WorldAnalysisResult
-from palette.palette_system import PaletteSystem
 from data.settlement_entities import Districts, Plot
-from structures.decoration.plot.decoration_builder import DecorationBuilder
-from world_interface.block_buffer import BlockBuffer
+from structures.base.build_context import BuildContext
+from structures.grammar.decoration_grammar import rule_fountain, rule_well
 
 logger = logging.getLogger(__name__)
 
-_DOCK_W = 14
-_DOCK_D = 10
-
-
 class DistrictMarker:
     """
-    Places a landmark at the centre of every district:
-      • fishing districts → Dock (oriented toward nearest water)
-      • all other districts → fountain
+    Places landmarks at district centers directly into the context buffer.
     """
-
-    def __init__(
-        self,
-        analysis: WorldAnalysisResult,
-        palette: PaletteSystem,
-    ) -> None:
+    def __init__(self, analysis: WorldAnalysisResult, ctx: BuildContext) -> None:
         self.analysis = analysis
-        self.palette  = palette
-        self._builder = DecorationBuilder(palette)
+        self.ctx = ctx # Context holds both the buffer and the palette
 
-    def build(self, districts: Districts) -> tuple[BlockBuffer, list[tuple[int, int]]]:
+    def build(self, districts: Districts) -> list[tuple[int, int]]:
         """
-        Build landmark buffers for every district centre.
-        Returns (merged_buffer, taken_cells).
+        Builds landmarks and returns 'taken' cells for avoidance.
         """
-        master  = BlockBuffer()
         taken: set[tuple[int, int]] = set()
-        area  = self.analysis.best_area
+        area = self.analysis.best_area
         water = self.analysis.water_mask.astype(bool)
 
         for idx, district in enumerate(districts.district_list):
-            cx = int(district.center_x)
-            cz = int(district.center_z)
+            cx, cz = int(district.center_x), int(district.center_z)
 
             if not area.contains_xz(cx, cz):
-                logger.warning(
-                    "District %d centre (%d, %d) outside build area — skipping.",
-                    idx, cx, cz,
-                )
                 continue
 
             li, lj = area.world_to_index(cx, cz)
             cy = int(self.analysis.heightmap_ground[li, lj])
-
             dtype = districts.types.get(idx, "")
 
             if dtype == "fishing":
-                buf = self._place_dock(cx, cy, cz, area, water, taken)
-                logger.info(
-                    "Dock placed at fishing district %d centre (%d, %d, %d).",
-                    idx, cx, cy, cz,
-                )
+                # For now, just a fountain until Dock orchestrator is verified
+                rule_fountain(self.ctx, cx, cy, cz)
+                self._mark_taken(cx, cz, 5, taken)
             else:
-                buf = self._builder.build_fountain_at(cx, cy, cz)
-                taken.update(
-                    (cx - 2 + dx, cz - 2 + dz)
-                    for dx in range(5)
-                    for dz in range(5)
-                )
-                logger.info(
-                    "Fountain placed at district %d (%s) centre (%d, %d, %d).",
-                    idx, dtype, cx, cy, cz,
-                )
+                # Random choice between Fountain and Well
+                choice = random.choice(["fountain", "well"])
+                if choice == "well":
+                    rule_well(self.ctx, cx - 1, cy, cz - 1)
+                    self._mark_taken(cx, cz, 3, taken)
+                else:
+                    rule_fountain(self.ctx, cx, cy, cz)
+                    self._mark_taken(cx, cz, 5, taken)
+                
+                logger.info(f"Marker '{choice}' placed at district {idx}.")
 
-            if buf:
-                master.merge(buf)
+        return list(taken)
 
-        return master, list(taken)
-
-    # ------------------------------------------------------------------
-
-    def _place_dock(self, cx, cy, cz, area, water, taken) -> BlockBuffer | None:
-        from structures.misc.dock import Dock, water_facing_rotation
-
-        rotation = water_facing_rotation(cx, cz, area, water)
-
-        wx = cx - _DOCK_W // 2
-        wz = cz - _DOCK_D // 2
-        wx = max(area.x_from, min(area.x_to - _DOCK_W + 1, wx))
-        wz = max(area.z_from, min(area.z_to - _DOCK_D + 1, wz))
-
-        plot = Plot(x=wx, z=wz, y=cy, width=_DOCK_W, depth=_DOCK_D, type="fishing")
-
-        try:
-            buf = Dock().build(None, plot, self.palette, rotation=rotation)
-        except Exception:
-            logger.error("Dock build failed at (%d, %d).", wx, wz, exc_info=True)
-            return None
-
-        for dx in range(-2, _DOCK_W + 2):
-            for dz in range(-2, _DOCK_D + 2):
-                taken.add((wx + dx, wz + dz))
-
-        return buf
+    def _mark_taken(self, cx: int, cz: int, size: int, taken_set: set):
+        offset = size // 2
+        for dx in range(-offset, offset + 1):
+            for dz in range(-offset, offset + 1):
+                taken_set.add((cx + dx, cz + dz))
