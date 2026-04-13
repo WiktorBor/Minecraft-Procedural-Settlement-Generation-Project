@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
+from structures.base.build_context import BuildContext
 
 # Ensure the project root is in the path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -18,6 +19,7 @@ from palette.palette_system import get_biome_palette
 from data.settlement_entities import Plot
 from structures.orchestrators.tower import build_tower  # The new orchestrator
 from world_interface.structure_placer import StructurePlacer
+from world_interface.block_buffer import BlockBuffer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s]: %(message)s")
 logger = logging.getLogger("test_tower")
@@ -91,10 +93,11 @@ def main() -> None:
 
     # CALLING THE NEW ORCHESTRATOR
     # We pass the role "tower_house" to test if windows and doors generate
+    ctx = BuildContext(BlockBuffer(), palette)
+
     buf = build_tower(
-        palette, 
-        hx, hy, hz, 
-        w=5, h=10, d=5, 
+        ctx, 
+        plot, 
         structure_role="clock_tower"
     )
 

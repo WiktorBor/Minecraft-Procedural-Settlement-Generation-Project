@@ -30,6 +30,8 @@ def build_dock(ctx: BuildContext, plot: Plot):
     for lx, lz in [(x, z), (x + w - 1, z), (pier_x, z + d - 1), (pier_x + pier_w - 1, z + d - 1)]:
         ctx.place_light((lx, y + 2, lz), key="light", hanging=False)
 
+    return ctx.buffer
+
 def _place_grid_pillars(ctx, x, y, z, w, d, step=3):
     """Helper to place pillars on the corners and edges."""
     points = set()

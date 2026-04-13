@@ -1,7 +1,7 @@
 from __future__ import annotations
 from structures.base.build_context import BuildContext
 from structures.orchestrators.primitives.bridge import build_bridge
-from structures.orchestrators.house import build_house_settlement
+from structures.house.house import build_house_settlement
 from structures.orchestrators.tower import build_tower
 from data.settlement_entities import Plot
 
@@ -26,17 +26,16 @@ def rule_tavern(ctx: BuildContext, x, y, z, tw, bw, cw, d):
     # 2. Modular Tower
     # We build a tower with a height that allows the bridge to connect properly
     tower_height = 9 
-    tower_buff = build_tower(ctx.palette, x, y, z + t_offset_z, tw, tower_height)
-    ctx.buffer.merge(tower_buff)
+    build_tower(ctx,
+                Plot(x=x, y=y, z=z, width=tw, depth=tw),
+                tower_height)
 
     # 3. Modular Annex (Cottage)
     # Uses rule_house to ensure the annex looks like other settlement buildings
     # bridge_side="west" tells the house to place the door/opening where the bridge lands
     build_house_settlement(
         ctx, 
-        Plot(x = x + tw + bw, y=y, z=z, width=cw, depth=d), 
-        ctx.palette, 
+        Plot(x = x + tw + bw, y=y, z=z, width=cw, depth=d),
         bridge_side="west", 
         structure_role="annex",
-        wall_h= (cw // 2) + (d // 2) - 1
     )

@@ -23,3 +23,5 @@ def build_tavern(ctx: BuildContext, plot: Plot) -> None:
     d = plot.depth if plot.depth % 2 != 0 else plot.depth - 1
     
     rule_tavern(ctx, plot.x, plot.y, plot.z, tw, bw, cw, d)
+
+    return ctx.buffer

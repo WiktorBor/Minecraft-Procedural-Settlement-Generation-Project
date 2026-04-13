@@ -11,6 +11,7 @@ from utils.astar import find_path
 from utils.mst import mst_edges
 from utils.path_utils import expand_path_to_width
 from utils.walkable_grid import build_cost_grid, nearest_walkable
+from utils.geometry import HasBounds
 
 logger = logging.getLogger(__name__)
 
@@ -128,9 +129,8 @@ class RoadPlanner:
             )
             return []
 
-        bounds   = (area.x_from, area.x_to, area.z_from, area.z_to)
         expanded = expand_path_to_width(
-            centerline, road_width, bounds, blocked=set(), organic=True
+            centerline, road_width, self.analysis.best_area, blocked=set(), organic=True
         )
 
         final_roads = [

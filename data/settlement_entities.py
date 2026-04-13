@@ -157,3 +157,15 @@ class Districts:
     seeds:         np.ndarray
     voronoi:       Voronoi
     district_list: list[District] = field(default_factory=list)
+
+    def get_at(self, world_x: int, world_z: int, analysis) -> int:
+        """
+        Converts world coordinates to local map indices and returns 
+        the district index at that location.
+        """
+        try:
+            # Convert world XZ to local array indices (0 to width/depth)
+            li, lj = analysis.best_area.world_to_index(world_x, world_z)
+            return self.map[li, lj]
+        except (IndexError, ValueError):
+            return -1

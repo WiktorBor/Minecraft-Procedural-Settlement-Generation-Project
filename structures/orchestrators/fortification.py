@@ -5,6 +5,7 @@ from structures.base.build_context import BuildContext
 from palette.palette_system import PaletteSystem
 from data.build_area import BuildArea
 from data.settlement_entities import Building
+from data.settlement_entities import Plot
 import numpy as np
 
 def build_fortification_settlement(
@@ -52,8 +53,9 @@ def build_fortification_settlement(
         gy = _sample_ground_y(cx, cz, area, heightmap)
         
         # Place Tower
-        tower_buff = build_tower(palette, cx, gy, cz, tower_width, (wall_top_y + 2) - gy)
-        ctx.buffer.merge(tower_buff)
+        build_tower(ctx, 
+                    Plot(x=cx, y=gy, z=cz, width=tower_width, depth=tower_width),
+                    (wall_top_y + 2) - gy)
 
     print("area.x_from:", area.x_from, "area.z_from:", area.z_from, "area.x_to:", area.x_to, "area.z_to:", area.z_to)
     wall_runs = [
@@ -75,6 +77,8 @@ def build_fortification_settlement(
         rule_fortification(ctx, sx + ox, wall_top_y, sz + oz, length, heightmap, area, t_boxes, b_boxes, horizontal)
 
         rule_fortification(ctx, sx + (ox//2), wall_top_y, sz + (oz//2), length, heightmap, area, t_boxes, b_boxes, horizontal, fill_walkway=True)
+
+    return ctx.buffer
 
 def _sample_ground_y(wx, wz, area, heightmap):
     local_x = max(0, min(heightmap.shape[0] - 1, wx - area.x_from))

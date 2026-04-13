@@ -18,7 +18,7 @@ from gdpc import Editor, Block
 from palette.palette_system import get_biome_palette
 from data.settlement_entities import Plot
 from structures.base.build_context import BuildContext
-from structures.orchestrators.primitives.farm import build_farm
+from structures.orchestrators.farm import build_farm
 from world_interface.block_buffer import BlockBuffer
 from world_interface.structure_placer import StructurePlacer
 

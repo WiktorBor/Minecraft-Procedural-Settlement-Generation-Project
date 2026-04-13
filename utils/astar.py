@@ -112,8 +112,9 @@ def find_path(
                 continue
 
             cell_cost = float(costs[nx, nz]) if costs is not None else 1.0
-            tentative_g: float = my_g + cell_cost + height_cost * height_diff
-
+            movement_penalty = cell_cost if cell_cost != np.inf else 999999
+            tentative_g = my_g + movement_penalty + (height_cost * height_diff)
+            
             if tentative_g < g_score[nx, nz]:
                 g_score[nx, nz] = tentative_g
                 came_from[nx, nz, 0] = ix

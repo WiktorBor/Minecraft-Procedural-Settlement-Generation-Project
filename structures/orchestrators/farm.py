@@ -19,3 +19,5 @@ def build_farm(ctx: BuildContext, plot: Plot) -> None:
 
     # 3. Call Grammar
     rule_farm(ctx, plot.x, plot.y, plot.z, w, d)
+
+    return ctx.buffer

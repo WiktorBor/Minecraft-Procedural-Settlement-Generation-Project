@@ -124,7 +124,7 @@ def main() -> None:
     )
 
     logger.info("Assembling Spire Tower (Tower + House Wing)...")
-    build_spire_tower(ctx, plot, palette)
+    build_spire_tower(ctx, plot)
 
     if not buffer:
         logger.error("Build failed: Buffer is empty.")

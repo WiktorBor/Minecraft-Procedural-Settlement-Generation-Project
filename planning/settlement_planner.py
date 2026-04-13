@@ -33,7 +33,7 @@ class SettlementPlanner:
         Roads and plots are empty — register fountain cells into state.occupancy,
         then call plan_roads(analysis, state).
         """
-        state        = SettlementState()
+        state        = SettlementState(analysis.best_area)
         state.center = self._choose_center(analysis)
         logger.info("Settlement centre: %s", state.center)
 

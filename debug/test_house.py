@@ -20,7 +20,7 @@ from gdpc import Editor, Block
 from palette.palette_system import get_biome_palette
 from data.settlement_entities import Plot
 from structures.base.build_context import BuildContext
-from structures.orchestrators.house import build_house_settlement
+from structures.house.house import build_house_settlement
 from world_interface.block_buffer import BlockBuffer
 from world_interface.structure_placer import StructurePlacer
 
@@ -105,11 +105,9 @@ def main() -> None:
     # We pass the bridge_side and structure_role from our Tweak Zone
     build_house_settlement(
         ctx, 
-        plot, 
-        palette, 
+        plot,  
         bridge_side=FORCE_PARAMS.get("bridge_side"),
         structure_role=FORCE_PARAMS.get("structure_role", "house"),
-        wall_h=FORCE_PARAMS.get("wall_h", 5)
     )
 
     # 5. Place the result

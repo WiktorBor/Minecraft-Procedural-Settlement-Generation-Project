@@ -1,11 +1,11 @@
 from structures.base.build_context import BuildContext
-from structures.orchestrators.house import build_house_settlement
+from structures.house.house import build_house_settlement
 from structures.orchestrators.primitives.roof import build_roof
 from structures.grammar.blacksmith_grammar import rule_forge_work_area, rule_chimney
 from data.settlement_entities import Plot
 from gdpc import Block
 
-def build_blacksmith(ctx: BuildContext, plot: Plot, palette):
+def build_blacksmith(ctx: BuildContext, plot: Plot):
     """
     Composed Blacksmith: 
     Uses the House Orchestrator for the living wing and 
@@ -23,7 +23,7 @@ def build_blacksmith(ctx: BuildContext, plot: Plot, palette):
     # 2. Build the Living Wing (USING EXISTING HOUSE MODULE)
     # We create a sub-plot and pass it to your existing house orchestrator
     house_plot = Plot(x=plot.x, y=plot.y, z=plot.z, width=left_w, depth=plot.depth)
-    build_house_settlement(ctx, house_plot, palette, structure_role="blacksmith")
+    build_house_settlement(ctx, house_plot, structure_role="blacksmith")
 
     # 3. Build the Forge Work Area (Custom Grammar)
     # The forge is simpler than a house, so we use a specific grammar rule
@@ -31,5 +31,6 @@ def build_blacksmith(ctx: BuildContext, plot: Plot, palette):
     rule_forge_work_area(ctx, right_x, plot.y, plot.z, right_w, plot.depth, 5, forge_d)
 
     # 4. Build the Chimney
-    # This sits in the 1-block gap we left
     rule_chimney(ctx, chim_x, plot.y, plot.z + (plot.depth // 2), height=10)
+
+    return ctx.buffer

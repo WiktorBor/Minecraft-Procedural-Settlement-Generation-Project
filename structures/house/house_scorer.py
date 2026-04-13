@@ -1,340 +1,164 @@
 """
 Aesthetic scorer for the house shape grammar.
-
-Architecture
-------------
-The scorer is a thin wrapper around a scikit-learn RandomForestClassifier
-trained on labelled grammar-parameter sets.  It answers one question:
-
-    "Given this set of grammar parameters, is the resulting house
-     likely to look good?"
-
-The model is trained offline using generate_training_data.py and saved as
-a .pkl file.  At runtime the scorer loads that file once and scores each
-proposed parameter set before any blocks are placed.
-
-Feature vector (11 features, all numeric)
-------------------------------------------
-    w, d              — footprint dimensions (int)
-    wall_h            — lower storey wall height (int 3-5)
-    has_upper         — upper storey present (0/1)
-    upper_h           — upper storey height (int 0-3)
-    has_chimney       — chimney present (0/1)
-    has_porch         — porch present (0/1)
-    has_extension     — lean-to extension present (0/1)
-    roof_type         — 0=gabled, 1=steep, 2=cross
-    foundation_h      — foundation depth (int 1-2)
-    aspect_ratio      — max(w,d) / min(w,d) (float)
-
-Label
------
-    score: float 0.0–1.0  (collected from you during training)
-    The model is trained as a regressor (RandomForestRegressor) so it
-    outputs a continuous score rather than a binary class.
-
-Usage
------
-    scorer = HouseScorer.load("models/house_scorer.pkl")
-    params = HouseParams(w=8, d=8, wall_h=4, ...)
-    score  = scorer.score(params)          # 0.0 – 1.0
-    if score >= scorer.threshold:
-        grammar.build_from_params(plot, params)
+Integrates RandomForest (Shape) and N-gram (Pattern) models.
 """
 from __future__ import annotations
 
 import logging
 import pickle
-from dataclasses import dataclass, asdict
+import os
+from dataclasses import dataclass
 from pathlib import Path
-
 import numpy as np
+import pandas as pd
+from sklearn.ensemble import RandomForestRegressor
 
 logger = logging.getLogger(__name__)
 
-# Default threshold — only build houses scoring at or above this.
-# Can be overridden at construction time.
-DEFAULT_THRESHOLD = 0.65
+DEFAULT_THRESHOLD = 0.55 
 
-# Roof type encoding (must match generate_training_data.py)
+# Numeric encoding for the ML model to match HouseParams.to_feature_vector
 ROOF_TYPES = {"gabled": 0, "steep": 1, "cross": 2}
-ROOF_TYPES_INV = {v: k for k, v in ROOF_TYPES.items()}
-
-
-# ---------------------------------------------------------------------------
-# Parameter dataclass — the feature vector in a named, type-safe form
-# ---------------------------------------------------------------------------
+ROLE_TYPES = {"house": 0, "cottage": 1}
 
 @dataclass
 class HouseParams:
     """
-    A fully-specified set of grammar parameters for one house.
-
-    All fields are the exact inputs the grammar needs — generating a
-    HouseParams and scoring it is cheap (no blocks placed, no GDPC calls).
+    A parameter bundle representing a proposed house build.
+    Used by the Orchestrator to judge designs before building.
     """
-    w:              int    # footprint width  (blocks)
-    d:              int    # footprint depth  (blocks)
-    wall_h:         int    # lower wall height (3–5)
-    has_upper:      bool   # upper storey present
-    upper_h:        int    # upper storey height (0 if not has_upper)
-    has_chimney:    bool   # chimney present
-    has_porch:      bool   # porch present
-    has_extension:  bool   # lean-to extension present
-    roof_type:      str    # "gabled" | "steep" | "cross"
-    foundation_h:   int    # foundation depth (1–2)
-    ext_w:          int    # extension width (0 if not has_extension)
+    w:              int    
+    d:              int    
+    wall_h:         int    
+    structure_role: str    
+    roof_type:      str    
+    has_upper:      bool   
+    has_chimney:    bool   = False
+    has_porch:      bool   = False
+    bridge_side:    str | None = None
 
     @property
     def aspect_ratio(self) -> float:
+        """Calculates the ratio of the longest side to the shortest side."""
         return max(self.w, self.d) / max(min(self.w, self.d), 1)
 
     def to_feature_vector(self) -> np.ndarray:
-        """Convert to the 11-element float32 array the model expects."""
+        """
+        Convert to a numeric array of EXACTLY 9 features.
+        The order here MUST match the training columns.
+        """
         return np.array([
-            float(self.w),
-            float(self.d),
-            float(self.wall_h),
+            float(self.w),float(self.d),float(self.wall_h),
+            float(ROLE_TYPES.get(self.structure_role, 0)),
+            float(ROOF_TYPES.get(self.roof_type, 0)),
             float(self.has_upper),
-            float(self.upper_h),
             float(self.has_chimney),
             float(self.has_porch),
-            float(self.has_extension),
-            float(ROOF_TYPES.get(self.roof_type, 0)),
-            float(self.foundation_h),
-            self.aspect_ratio,
-            float(self.ext_w),
+            (max(self.w, self.d) / min(self.w, self.d))
         ], dtype=np.float32)
 
     @staticmethod
     def feature_names() -> list[str]:
-        return [
-            "w", "d", "wall_h", "has_upper", "upper_h",
-            "has_chimney", "has_porch", "has_extension",
-            "roof_type", "foundation_h", "aspect_ratio", "ext_w",
-        ]
+        """Ensures training and scoring always use the same column names."""
+        return ["w", "d", "wall_h", "role_num", "roof_num", "upper", "chimney", "porch", "aspect"]
 
-
-# ---------------------------------------------------------------------------
-# Scorer — loads a trained model and scores HouseParams instances
-# ---------------------------------------------------------------------------
 
 class HouseScorer:
     """
-    Wraps a trained RandomForestRegressor to score grammar parameter sets.
-
-    If no model file is found, falls back to a heuristic scorer so the
-    grammar still works without training data.
+    Combines a RandomForest (Architectural Shape) and an N-gram (Block Patterns).
     """
-
-    def __init__(
-        self,
-        model=None,
-        threshold: float = DEFAULT_THRESHOLD,
-    ) -> None:
-        self._model    = model
+    def __init__(self, model=None, ngram_model=None, threshold: float = DEFAULT_THRESHOLD) -> None:
+        self._model = model          # The Shape Brain (RandomForest)
+        self._ngram = ngram_model    # The Pattern Brain (N-gram)
         self.threshold = threshold
 
-    # ------------------------------------------------------------------
-    # Construction
-    # ------------------------------------------------------------------
-
-    @classmethod
-    def load(cls, path: str | Path, threshold: float = DEFAULT_THRESHOLD) -> "HouseScorer":
-        """
-        Load a trained model from a .pkl file.
-
-        Falls back to heuristic scoring (no model) if the file does not
-        exist, so the grammar degrades gracefully on a fresh install.
-        """
-        p = Path(path)
-        if not p.exists():
-            logger.warning(
-                "HouseScorer: model file %s not found — using heuristic scorer. "
-                "Run generate_training_data.py to create training data, then "
-                "train_scorer.py to fit the model.",
-                p,
-            )
-            return cls(model=None, threshold=threshold)
-
-        with open(p, "rb") as f:
-            model = pickle.load(f)
-        logger.info("HouseScorer: loaded model from %s", p)
-        return cls(model=model, threshold=threshold)
-
-    @classmethod
-    def train_and_save(
-        cls,
-        csv_path: str | Path,
-        model_path: str | Path,
-        threshold: float = DEFAULT_THRESHOLD,
-        n_estimators: int = 200,
-        random_state: int = 42,
-    ) -> "HouseScorer":
-        """
-        Train a RandomForestRegressor from a labelled CSV and save it.
-
-        CSV format (produced by generate_training_data.py):
-            w,d,wall_h,has_upper,upper_h,has_chimney,has_porch,
-            has_extension,roof_type,foundation_h,score
-
-        Args:
-            csv_path:    Path to the labelled CSV file.
-            model_path:  Where to save the trained .pkl file.
-            threshold:   Score threshold to use at inference time.
-            n_estimators: Number of trees in the random forest.
-            random_state: Seed for reproducibility.
-
-        Returns:
-            A HouseScorer instance wrapping the trained model.
-        """
-        try:
-            import pandas as pd
-            from sklearn.ensemble import RandomForestRegressor
-            from sklearn.model_selection import cross_val_score
-            from sklearn.preprocessing import LabelEncoder
-        except ImportError as e:
-            raise ImportError(
-                "Training requires pandas and scikit-learn: "
-                "pip install pandas scikit-learn"
-            ) from e
-
-        df = pd.read_csv(csv_path)
-        required = set(HouseParams.feature_names() + ["score"])
-        missing = required - set(df.columns)
-        if missing:
-            raise ValueError(f"CSV missing columns: {missing}")
-
-        # Encode roof_type string → int
-        df["roof_type"] = df["roof_type"].map(ROOF_TYPES).fillna(0).astype(int)
-
-        X = df[HouseParams.feature_names()].values.astype(np.float32)
-        y = df["score"].values.astype(np.float32)
-
-        model = RandomForestRegressor(
-            n_estimators=n_estimators,
-            random_state=random_state,
-            max_depth=8,
-            min_samples_leaf=2,
-        )
-        model.fit(X, y)
-
-        # Cross-validation score for the report
-        cv_scores = cross_val_score(model, X, y, cv=min(5, len(df) // 4), scoring="r2")
-        logger.info(
-            "HouseScorer trained: R²=%.3f ± %.3f  (n=%d samples, %d trees)",
-            cv_scores.mean(), cv_scores.std(), len(df), n_estimators,
-        )
-
-        # Feature importance — useful for the report
-        importances = sorted(
-            zip(HouseParams.feature_names(), model.feature_importances_),
-            key=lambda x: -x[1],
-        )
-        logger.info("Feature importances:")
-        for name, imp in importances:
-            logger.info("  %-20s %.3f", name, imp)
-
-        model_path = Path(model_path)
-        model_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(model_path, "wb") as f:
-            pickle.dump(model, f)
-        logger.info("Model saved to %s", model_path)
-
-        return cls(model=model, threshold=threshold)
-
-    # ------------------------------------------------------------------
-    # Scoring
-    # ------------------------------------------------------------------
-
-    def score(self, params: HouseParams) -> float:
-        """
-        Return an aesthetic score in [0.0, 1.0] for the given parameters.
-
-        Uses the trained model if available, otherwise falls back to the
-        built-in heuristic.
-        """
-        if self._model is not None:
-            x = params.to_feature_vector().reshape(1, -1)
-            raw = float(self._model.predict(x)[0])
-            return float(np.clip(raw, 0.0, 1.0))
-        return self._heuristic_score(params)
-
-    def passes(self, params: HouseParams) -> bool:
-        """Return True if score >= threshold."""
-        return self.score(params) >= self.threshold
-
-    # ------------------------------------------------------------------
-    # Heuristic fallback (no model required)
-    # ------------------------------------------------------------------
-
     @staticmethod
-    def _heuristic_score(params: HouseParams) -> float:
+    def train_and_save(csv_path: str, model_output_path: str):
         """
-        Hand-crafted aesthetic rules derived from looking at good Minecraft
-        medieval buildings.  Used when no trained model is available.
-
-        Rules:
-          - Upper storey improves score significantly
-          - Chimney improves score
-          - Very flat roofs (gabled on tiny footprint) look worse
-          - Cross-gabled only looks good on large footprints
-          - Extreme aspect ratios (very long thin) look odd
-          - Porch adds character
-          - Extensions add silhouette interest
+        Trains the RandomForest using the 9-feature vector system.
         """
-        s = 0.5   # baseline
+        print(f"Training ML model on {csv_path}...")
+        df = pd.read_csv(csv_path)
+        
+        # 1. Ensure string columns are mapped to the same numbers as HouseParams
+        df['role_num'] = df['role'].map(ROLE_TYPES).fillna(0)
+        df['roof_num'] = df['roof_type'].map(ROOF_TYPES).fillna(0)
+        # Handle boolean conversion for CSV rows
+        df['upper'] = df['has_upper'].astype(float)
+        df['chimney'] = df['has_chimney'].astype(float)
+        df['porch'] = df['has_porch'].astype(float)
+        df['aspect'] = df.apply(lambda r: max(r['w'], r['d']) / max(min(r['w'], r['d']), 1), axis=1)
+        
+        # 2. Extract the exact 9 features
+        feature_cols = HouseParams.feature_names()
+        X = df[feature_cols]
+        y = df["score"]
+        
+        # 3. Train and Save
+        model = RandomForestRegressor(n_estimators=100, random_state=42)
+        model.fit(X, y)
+        
+        os.makedirs(os.path.dirname(model_output_path), exist_ok=True)
+        with open(model_output_path, "wb") as f:
+            pickle.dump(model, f)
+        print(f"Success: Model saved to {model_output_path}")
 
-        # Upper storey is the biggest visual differentiator
-        if params.has_upper:
-            s += 0.15
+    @classmethod
+    def load(cls, path: str | Path = "models/house_scorer.pkl", 
+             ngram_path: str | Path = "models/house_ngram_scorer.pkl",
+             threshold: float = DEFAULT_THRESHOLD) -> "HouseScorer":
+        """Loads both ML models if available, otherwise falls back to heuristics."""
+        rf_model = None
+        ngram_model = None
 
-        # Chimney adds character
-        if params.has_chimney:
-            s += 0.08
+        # Load Shape Model
+        if Path(path).exists():
+            with open(path, "rb") as f:
+                rf_model = pickle.load(f)
+        else:
+            logger.warning(f"Shape model {path} not found.")
 
-        # Porch adds character
-        if params.has_porch:
-            s += 0.05
+        # Load Pattern Model (N-gram)
+        if Path(ngram_path).exists():
+            with open(ngram_path, "rb") as f:
+                ngram_model = pickle.load(f)
+        
+        return cls(model=rf_model, ngram_model=ngram_model, threshold=threshold)
 
-        # Extension breaks rectangular silhouette — good
-        if params.has_extension:
-            s += 0.06
+    def score(self, params: HouseParams, block_sequence: list[str] | None = None) -> float:
+        """
+        Calculates a blended score.
+        70% Shape (RandomForest) + 30% Pattern (N-gram).
+        """
+        # 1. Get Shape Score
+        shape_score = 0.5
+        if self._model is not None:
+            x_raw = params.to_feature_vector().reshape(1, -1)
+            x_df = pd.DataFrame(x_raw, columns=HouseParams.feature_names())
+            shape_score = float(self._model.predict(x_df)[0])
+        else:
+            shape_score = self._heuristic_score(params)
+        
+        # 2. Get Pattern Score (if N-gram exists and sequence is provided)
+        pattern_score = 1.0
+        if block_sequence and self._ngram is not None:
+            # Assumes the N-gram model has a get_sequence_probability method
+            try:
+                pattern_score = self._ngram.get_sequence_probability(block_sequence)
+            except AttributeError:
+                pass
 
-        # Cross-gabled only suits large footprints
-        if params.roof_type == "cross":
-            if params.w >= 9 and params.d >= 9:
-                s += 0.05
-            else:
-                s -= 0.30   # looks wrong on small buildings
+        # 3. Blend and Clip
+        final = (shape_score * 0.7) + (pattern_score * 0.3)
+        return float(np.clip(final, 0.0, 1.0))
 
-        # Steep roof on small cottage looks great
-        if params.roof_type == "steep" and params.w <= 7:
-            s += 0.08
-
-        # Tall walls without upper storey look like a box
-        if params.wall_h >= 5 and not params.has_upper:
-            s -= 0.10
-
-        # Very small footprints shouldn't get upper storeys
-        if params.has_upper and (params.w < 7 or params.d < 7):
-            s -= 0.25
-
-        # Extreme aspect ratios
-        if params.aspect_ratio > 2.5:
-            s -= 0.10
-
-        # Deep foundation looks more embedded — slight bonus
-        if params.foundation_h == 2:
-            s += 0.03
-
-        features = sum([
-            params.has_upper,
-            params.has_chimney,
-            params.has_porch,
-            params.has_extension,
-        ])
-
-        if features == 0:
-            s -= 0.20
-
+    def _heuristic_score(self, params: HouseParams) -> float:
+        """Mathematical fallback if no ML model is trained."""
+        s = 0.5
+        if params.structure_role == "cottage":
+            s += 0.1 if (params.w <= 7 and params.d <= 7) else -0.2
+        if params.wall_h > params.w or params.wall_h > params.d:
+            s -= 0.15
+        if params.aspect_ratio > 2.0:
+            s -= 0.1
         return float(np.clip(s, 0.0, 1.0))

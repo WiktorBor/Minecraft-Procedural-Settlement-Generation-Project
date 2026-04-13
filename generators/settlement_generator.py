@@ -19,9 +19,9 @@ from palette.palette_system import PaletteSystem
 from planning.settlement_planner import SettlementPlanner
 from structures.base.build_context import BuildContext
 from structures.structure_selector import StructureSelector
-from structures.decoration.district.district_marker import DistrictMarker
+from structures.district_structures.district_marker import DistrictMarker
 from world_interface.block_buffer import BlockBuffer
-from world_interface.road_placer import RoadBuilder
+from planning.infrastructure.road_placer import RoadBuilder
 from world_interface.structure_placer import StructurePlacer
 from world_interface.terraforming import fill_depressions, level_plot_area, recompute_all_maps
 
@@ -59,15 +59,6 @@ class SettlementGenerator:
         analysis = self.analyser.prepare()
         logger.info("  ✓ World analysis complete. Best area: %s", analysis.best_area)
 
-        logger.info("[Phase 1] Filling terrain holes...")
-        fill_depressions(editor=self.editor, analysis=analysis, config=self.terrain_config)
-        self.editor.flushBuffer()
-        recompute_all_maps(
-            self.editor, analysis, self.terrain_config,
-            terrain_loader=self.analyser.fetcher.terrain,
-        )
-        logger.info("  ✓ Terrain prepared.")
-
         # --- Phase 2: District planning + palettes ---
         logger.info("[Phase 2] District planning...")
         state = self.planner.plan_districts(analysis)
@@ -82,24 +73,31 @@ class SettlementGenerator:
         # Initialize a shared BuildContext for the master settlement buffer
         self.ctx = BuildContext(buffer=master_buffer, palette=default_palette)
 
-        # --- Phase 3a: Central plaza ---
+        # --- Phase 3: Civic Landmark (Plaza) ---
+        area = analysis.best_area
+        total_settlement_area = area.width * area.depth
+        
+        # Calculate potential plaza dimensions
         plaza_radius = state.plaza_radius
-        if plaza_radius > 0:
+        plaza_side = plaza_radius * 2
+        plaza_area = plaza_side * plaza_side
+
+        if plaza_radius > 0 and (plaza_area / total_settlement_area) <= 0.15:
             cx, cz = state.plaza_center
             logger.info(
-                "[Phase 3a] Placing %s plaza (radius=%d) at (%d, %d)...",
-                "big" if plaza_radius >= 8 else "small", plaza_radius, cx, cz,
+                "[Phase 3a] Placing %s plaza (radius=%d) at (%d, %d)..."
             )
-            area   = analysis.best_area
             li, lj = area.world_to_index(cx, cz)
             cy     = int(analysis.heightmap_ground[li, lj])
 
             plaza_plot = Plot(
                 x=cx - plaza_radius, z=cz - plaza_radius,
-                width=plaza_radius * 2, depth=plaza_radius * 2, y=cy,
+                width=plaza_side, depth=plaza_side, y=cy,
+                type="plaza"
             )
+
+            level_plot_area(self.editor, analysis, plaza_plot)
             from structures.orchestrators.plaza import build_square_centre
-            # Build directly into the master buffer via context
             build_square_centre(self.ctx, plaza_plot)
 
             road_width  = self.settlement_config.road_width
@@ -115,7 +113,13 @@ class SettlementGenerator:
 
             ring_cells = self._generate_ring_road(cx, cz, plaza_radius, analysis, road_width)
             state.add_road_cells(ring_cells)
+            state.add_taken({(c.x, c.z) for c in ring_cells})
             logger.info("  ✓ Plaza + ring road placed (%d cells).", len(ring_cells))
+        else:
+            logger.info(
+                "[Phase 3a] Skipping plaza: radius=%d too large for area (%.2f%%).",
+                plaza_radius, (plaza_area / total_settlement_area) * 100
+            )
 
         # --- Phase 3b: District markers (fountains / wells / docks) ---
         logger.info("[Phase 3b] Placing district markers...")
@@ -128,13 +132,7 @@ class SettlementGenerator:
         # build() now writes to master_buffer via ctx and returns ONLY taken cells
         fountain_cells = district_marker.build(state.districts)
         state.add_taken(fountain_cells)
-
-        # --- Phase 3c: Central landmark tower ---
-        tower_buf, tower_taken = self._place_central_tower(state, default_palette, analysis)
-        if tower_buf is not None:
-            master_buffer.merge(tower_buf)
-        if tower_taken:
-            state.add_taken(tower_taken)
+        logger.info("  ✓ District markers placed (%d cells).", len(fountain_cells))
 
         # --- Phase 3d: Road planning + placement ---
         logger.info("[Phase 3d] Planning roads...")
@@ -255,7 +253,7 @@ class SettlementGenerator:
         logger.info("[Phase 6] Building fortification...")
         from structures.orchestrators.fortification import build_fortification_settlement
         # Reuse existing master context
-        wall_top_y = int(np.median(analysis.heightmap_ground)) + 12
+        wall_top_y = int(np.max(analysis.heightmap_ground)) + 10
         build_fortification_settlement(
             self.ctx, default_palette,
             analysis.heightmap_ground, analysis.best_area,
@@ -269,164 +267,6 @@ class SettlementGenerator:
         logger.info("  ✓ All blocks placed.")
 
         return state
-
-    def _place_central_tower(
-        self,
-        state: SettlementState,
-        palette: PaletteSystem,
-        analysis,
-    ) -> set[tuple[int, int]] | None:
-        """
-        Optionally place one landmark tower somewhere near the settlement centre.
-
-        Tower type and position are chosen with aesthetic rules so the result
-        feels hand-placed rather than mechanically centred:
-
-        Type selection (weighted)
-        -------------------------
-        - SpireTower  (40 %) — tall stone spire + house wing; looks best on a
-                               slight high point; needs a 10×6 footprint.
-        - ClockTower  (35 %) — compact civic landmark; fits any 8×8 space and
-                               works well near the plaza.
-        - None        (25 %) — some settlements have no dominant tower, which
-                               adds variety between runs.
-
-        Position selection
-        ------------------
-        Candidates are sampled in a ring around the best_area centroid at radii
-        8–25 blocks (avoids the plaza, isn't on the very edge).  Each candidate
-        is scored by how much it rises above the local median height — a slight
-        elevation makes the tower look naturally placed on a hill.  The highest-
-        scoring candidate that doesn't overlap taken cells is used.  If no
-        candidate scores above 0 the centroid itself is tried as a fallback.
-
-        Returns the set of (x, z) cells occupied by the tower, or None if no
-        tower was placed.
-        """
-        # --- Roll tower type ---
-        roll = random.random()
-        if roll < 0.25:
-            logger.info("[Phase 3a.6] No central tower this run (25%% chance).")
-            return None, None
-        elif roll < 0.65:
-            tower_type = "spire"
-            min_w, min_d = 10, 6
-        else:
-            tower_type = "clock"
-            min_w, min_d = 8, 8
-
-        area = analysis.best_area
-        hmap = analysis.heightmap_ground
-
-        # best_area centroid in world coords
-        cent_x = (area.x_from + area.x_to) // 2
-        cent_z = (area.z_from + area.z_to) // 2
-
-        # Compute median height across the whole area for elevation scoring
-        median_y = int(np.median(hmap))
-
-        # --- Candidate search: ring of radii 8–25 around centroid ---
-        def _footprint_clear(wx: int, wz: int, fw: int, fd: int) -> bool:
-            """True if no occupied cell overlaps the footprint + 2-block buffer."""
-            for dx in range(-2, fw + 2):
-                for dz in range(-2, fd + 2):
-                    if (wx + dx, wz + dz) in state.occupancy:
-                        return False
-            return True
-
-        best_pos   = None
-        best_score = -999
-
-        step = 4  # angular step size — enough candidates without being slow
-        for radius in range(8, 26, 4):
-            for angle_step in range(0, 360, step):
-                rad = math.radians(angle_step)
-                wx  = cent_x + int(round(radius * math.cos(rad)))
-                wz  = cent_z + int(round(radius * math.sin(rad)))
-
-                if not area.contains_xz(wx, wz):
-                    continue
-                if not area.contains_xz(wx + min_w - 1, wz + min_d - 1):
-                    continue
-
-                li = wx - area.x_from
-                lj = wz - area.z_from
-                if not (0 <= li < hmap.shape[0] and 0 <= lj < hmap.shape[1]):
-                    continue
-
-                ground_y = int(hmap[li, lj])
-                # Prefer cells that are slightly above median (1–4 blocks) —
-                # that's a natural hilltop.  Penalise very high (cliff) or
-                # very low (valley) positions.
-                elev_diff = ground_y - median_y
-                if elev_diff < 0:
-                    score = elev_diff * 2        # strong penalty for valleys
-                elif 1 <= elev_diff <= 4:
-                    score = elev_diff * 3 + 5    # sweet spot: gentle hill
-                elif elev_diff <= 8:
-                    score = 10 - elev_diff       # acceptable but not ideal
-                else:
-                    score = -elev_diff           # cliff — penalise
-
-                # Small random jitter so identical-height candidates don't
-                # always resolve to the same compass direction each run
-                score += random.uniform(-0.5, 0.5)
-
-                water_slice = analysis.water_mask[li:li + min_w, lj:lj + min_d]
-                if water_slice.any():
-                    continue
-
-                if score > best_score and _footprint_clear(wx, wz, min_w, min_d):
-                    best_score = score
-                    best_pos   = (wx, wz)
-
-        # Fallback to centroid if no candidate found
-        if best_pos is None:
-            if _footprint_clear(cent_x, cent_z, min_w, min_d):
-                best_pos = (cent_x, cent_z)
-            else:
-                logger.info("[Phase 3a.6] No clear position for central tower — skipping.")
-                return None, None
-
-        wx, wz = best_pos
-        li     = wx - area.x_from
-        lj     = wz - area.z_from
-        wy     = int(hmap[li, lj])
-
-        plot = Plot(x=wx, z=wz, y=wy, width=min_w, depth=min_d, type="landmark")
-
-        logger.info(
-            "[Phase 3a.6] Placing central %s tower at (%d, %d) y=%d  "
-            "(elev_score=%.1f).",
-            tower_type, wx, wz, wy, best_score,
-        )
-
-        try:
-            if tower_type == "spire":
-                from structures.orchestrators.spire_tower import build_spire_tower
-                tower_buf = BlockBuffer()
-                tower_ctx = BuildContext(buffer=tower_buf, palette=palette)
-                build_spire_tower(tower_ctx, plot, palette)
-            else:
-                from structures.orchestrators.tower import build_tower
-                tower_buf = build_tower(
-                    palette, plot.x, plot.y, plot.z,
-                    plot.width, 12, plot.depth,
-                    structure_role="clock_tower",
-                )
-        except Exception:
-            logger.error(
-                "[Phase 3a.6] Central tower builder failed at (%d, %d).",
-                wx, wz, exc_info=True,
-            )
-            return None, None
-
-        footprint = {
-            (wx + dx, wz + dz)
-            for dx in range(min_w)
-            for dz in range(min_d)
-        }
-        return tower_buf, footprint
 
     def _generate_ring_road(
         self,
@@ -561,7 +401,7 @@ class SettlementGenerator:
 
             # Expand to 2-wide with organic edges so it looks like a
             # worn footpath rather than a single-pixel line.
-            bounds = (area.x_from, area.x_to, area.z_from, area.z_to)
+            bounds = analysis.best_area
             expanded = expand_path_to_width(
                 centerline, 2, bounds,
                 blocked=set(),

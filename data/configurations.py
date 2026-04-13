@@ -72,10 +72,10 @@ class SettlementConfig:
     # actual size randomly between min_plot_size and these values so the
     # settlement has a natural mix of small and large footprints.
     # Sizes are set to fit the largest structure in each district pool:
-    #   residential → tavern (19×8), tower_house (10×6)
-    #   fishing     → cottage (7×7), clock_tower (8×8)
-    #   forest      → tavern (19×8), tower_house (10×6)
-    #   farming     → farm (5×5), market_stall (5×5)
+    #   residential → tavern (19×8), spire_tower (10×6)
+    #   fishing     → cottage (7×7), tower (8×8)
+    #   forest      → tavern (19×8), spire_tower (10×6)
+    #   farming     → farm (5×5), market (5×5)
     plot_width: dict[str, int] = field(
         default_factory=lambda: {
             "residential": 22,

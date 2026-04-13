@@ -77,15 +77,19 @@ def _add_clock_faces(ctx: BuildContext, x: int, y: int, z: int, w: int, d: int) 
     mat_accent = ctx.palette.get("clock_hands", "minecraft:gold_block")
 
     # Calculate the center of the tower shaft
-    cx = x + w // 2
-    cz = z + d // 2
+    cx = int(x + (w // 2))
+    cz = int(z + (d // 2))
     
     # Radius from center to the wall face
-    rx = w // 2
-    rz = d // 2
+    faces = [
+        (cx, z),             # North Face (min Z)
+        (cx, z + d - 1),     # South Face (max Z)
+        (x + w - 1, cz),     # East Face  (max X)
+        (x, cz)              # West Face  (min X)
+    ]
 
     # fdx/fdz represent the face direction (North, South, East, West)
-    for fdx, fdz in [(0, -rz), (0, rz), (rx, 0), (-rx, 0)]:
+    for fdx, fdz in faces:
         for dx in range(-1, 2):
             for dy in range(-1, 2):
                 # Calculate placement

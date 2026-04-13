@@ -37,6 +37,8 @@ def build_square_centre(ctx: BuildContext, plot: Plot):
     # 3. Foundation (always build downward to prevent floating)
     _fill_plaza_foundation(ctx, cx, cy, cz, radius)
 
+    return ctx.buffer
+
 def _fill_plaza_foundation(ctx: BuildContext, cx: int, cy: int, cz: int, radius: int):
     for dx in range(-radius, radius + 1):
         for dz in range(-radius, radius + 1):

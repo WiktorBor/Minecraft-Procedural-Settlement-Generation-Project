@@ -29,6 +29,8 @@ def build_market_stall(ctx: BuildContext, plot: Plot):
     rule_market_counter(ctx, sx, sy, sz, sw, sd)
     rule_market_canopy(ctx, sx, sy, sz, sw, sd, sh)
 
+    return ctx.buffer
+
 def _build_foundation(ctx, x, y, z, w, d):
     """Ensures a solid cobblestone base beneath the stall."""
     found = ctx.palette.get("foundation", "minecraft:cobblestone")
