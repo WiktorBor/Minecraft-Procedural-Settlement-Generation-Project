@@ -19,18 +19,11 @@ class MaterialRole(Enum):
     ACCENT = "decorative"    # Logs, trim, highlights
     UTILITY = "functional"   # Doors, windows, fences
     LIGHT = "atmospheric"    # Lanterns, glowstone
-
-class StructurePersonality(Enum):
-    """Building complexity and material distribution."""
-    SIMPLE = {"core": 0.80, "accent": 0.10, "utility": 0.10, "light": 0.00}
-    STANDARD = {"core": 0.60, "accent": 0.20, "utility": 0.15, "light": 0.05}
-    DECORATED = {"core": 0.50, "accent": 0.30, "utility": 0.15, "light": 0.05}
-    ORNATE = {"core": 0.40, "accent": 0.40, "utility": 0.15, "light": 0.05}
     
 # DISTRICT MEMORY - prevent repetition and enforece coherence
 class DistrictMemory:
     """Tracks materials used in district for anti-clustering"""
-    def __init__(self, district_id: int, history_length: int = 5):
+    def __init__(self, district_id: int, history_length: int = 3):
         self.district_id = district_id
         self.history = deque(maxlen=history_length)
 
@@ -139,10 +132,6 @@ class PaletteSystem:
             )
 
             # Inject road materials into the same palette object for the builders
-            palette["path"] = self.get_road_material(biome_hint, is_main=False)
-            palette["path_edge"] = self.get_road_component(biome_hint, is_main=False, component_type="edge")
-            palette["path_slab"] = self.get_road_component(biome_hint, is_main=False, component_type="slab")
-            
             palettes[idx] = palette
             
         return palettes
@@ -150,14 +139,8 @@ class PaletteSystem:
     # Weighted choice utility
     def _get_weighted_variant(self, variant_data: Any) -> str:
         """Pick a material based on weights"""
-        if isinstance(variant_data, dict):
-            if "variants" in variant_data:
-                return random.choices(
-                    variant_data["variants"], 
-                    weights=variant_data.get("weights"), 
-                    k=1
-                )[0]
-            return variant_data
+        if isinstance(variant_data, dict) and "variants" in variant_data:
+            return random.choices(variant_data["variants"], weights=variant_data.get("weights"), k=1)[0]
         # List: ["stone", "cobblestone", "andesite"]
         if isinstance(variant_data, list):
             return random.choice(variant_data)
@@ -197,20 +180,25 @@ class PaletteSystem:
     def create_palette(self, district_id: int,
                        biome_name: str = "", district_type: str = "residential") -> dict:
         archetype = self._resolve_archetype(biome_name)
-        lib = MATERIAL_LIBRARY[archetype]
+        lib = self.MATERIAL_LIBRARY.get(archetype, self.MATERIAL_LIBRARY["TEMPERATE"])
         district_memory = self._get_or_create_district(district_id)
 
         # Weighted primary wall selection with anti-clustering
         primary_wall = self._get_weighted_variant(lib["structure"]["primary_wall"])
-        roof_set = self._get_weighted_variant(lib["structure"]["roof"])
         # Anti-clustering: re-roll if same as last few
         attempts = 0
         while district_memory.is_overused(primary_wall) and attempts < 3:
             primary_wall = self._get_weighted_variant(lib["structure"]["primary_wall"])
-            roof_set = self._get_weighted_variant(lib["structure"]["roof"])
             attempts += 1
         district_memory.add_building(primary_wall)
-        district_memory.add_building(roof_set)
+
+        #roof selection with anti-clustering
+        roof_set = self._get_weighted_variant(lib["structure"]["roof"])
+        attempts_roof = 0
+        while district_memory.is_overused(roof_set['label']) and attempts_roof < 3:
+            roof_set = self._get_weighted_variant(lib["structure"]["roof"])
+            attempts_roof += 1
+        district_memory.add_building(roof_set['label'])
 
         accent_raw = lib["structure"]["accent"]
         accent = self._pick_compatible_material(primary_wall, accent_raw)
@@ -285,6 +273,12 @@ class PaletteSystem:
             else:
                 palette[k] = f"minecraft:{v}"
 
+        palette["road_config"] = {
+            "main": self.get_road_material(biome_name, is_main=True),
+            "path": self.get_road_material(biome_name, is_main=False),
+            "edge": self.get_road_component(biome_name, is_main=False, component_type="edge")
+        }
+
         return palette
     
     def _pick_compatible_material(self, primary_wall: str, accent_options) -> str:
@@ -296,18 +290,9 @@ class PaletteSystem:
         default_affinity = self.MATERIAL_AFFINITY.get("_default", 0.6)
         
         # Score each accent option
-        scored_options = []
-        for accent in accent_list:
-            score = affinity.get(accent, default_affinity)
-            scored_options.append((accent, score))
-        
-        # Pick weighted by score
-        accents, scores = zip(*scored_options)
-        selected = random.choices(accents, weights=scores, k=1)[0]
-        
-        logger.debug(f"[affinity] wall={primary_wall} → accent={selected} (score={affinity.get(selected, default_affinity)})")
-        
-        return selected
+        scored = [(a, affinity.get(a, default_affinity)) for a in accent_list]
+        accents, scores = zip(*scored)
+        return random.choices(accents, weights=scores, k=1)[0]
     
     # get materials by role for buildings
     def get_materials_by_role(self, palette: dict, role: MaterialRole) -> List[str]:
@@ -320,6 +305,13 @@ class PaletteSystem:
         """
         key = f"role:{role.name.lower()}"
         return palette.get(key, [palette.get("wall", "minecraft:stone")])
+    
+    def get_district_material(self, palette: dict, key: str, district_type: str = "residential") -> str:
+        """Fix #4: Per-building resampling."""
+        if key in palette: return palette[key]
+        arch = palette.get("archetype", "TEMPERATE")
+        options = self.MATERIAL_LIBRARY[arch]["districts"].get(district_type, {}).get(key, "oak_log")
+        return f"minecraft:{self._get_weighted_variant(options)}"
     
     #4 road components :stairs/slabs; main/path
     def get_road_component(self, biome_name: str, is_main: bool, component_type: str = "base", existing_block: str = None) -> str:
@@ -339,27 +331,12 @@ class PaletteSystem:
         if component_type == "base": return f"minecraft:{base_block}"
         
         # base block -deal with block name conversion issues (3)
-        clean_base = base_block
-        if "planks" in base_block:
-            clean_base = base_block.replace("_planks", "").replace("planks", "")
-        elif "bricks" in base_block:
-            clean_base = base_block.replace("bricks", "brick")
-        elif base_block == "bricks":
-            clean_base = "brick"
-        elif base_block.endswith("s") and not base_block.endswith("ss"):
-            clean_base = base_block[:-1]
+        clean_base = base_block.replace("_planks", "").replace("planks", "").replace("bricks", "brick")
+        if clean_base.endswith("s") and not clean_base.endswith("ss"): clean_base = clean_base[:-1]
 
-        # stairs
-        if component_type == "stair":
-            stair_key = f"{clean_base}_stairs"
-            return f"minecraft:{stair_key}" if self._block_exists(stair_key, base_block) else "minecraft:oak_stairs"
-
-        # slabs
-        if component_type == "slab":
-            slab_key = f"{clean_base}_slab"
-            return f"minecraft:{slab_key}" if self._block_exists(slab_key, base_block) else "minecraft:oak_slab"
-
-        raise ValueError(f"Unknown road component: {component_type}")
+        suffix = "_stairs" if component_type == "stair" else "_slab"
+        key = f"{clean_base}{suffix}"
+        return f"minecraft:{key}" if self._block_exists(key, base_block) else f"minecraft:oak{suffix}"
     
     def get_road_material(self, biome_name: str, is_main: bool = True) -> str:
         return self.get_road_component(biome_name, is_main, component_type="base")

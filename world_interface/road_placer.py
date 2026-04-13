@@ -46,9 +46,10 @@ class RoadBuilder:
         palette: PaletteSystem,
     ) -> None:
         self.analysis  = analysis
-        self._path     = Block(palette["path"])
-        self._edge     = Block(palette_get(palette, "path_edge", palette["path"]))
-        self._slab     = Block(palette_get(palette, "path_slab", palette["path"]),
+        road_cfg = palette.get("road_config", {})
+        self._path  = Block(road_cfg.get("main", "minecraft:stone_bricks"))
+        self._edge  = Block(road_cfg.get("main", "minecraft:stone_bricks"))
+        self._slab  = Block(road_cfg.get("path_slab", palette.get("path_slab", "minecraft:stone_brick_slab")),
                                {"type": "bottom"})
         self._light    = Block(palette_get(palette, "light", "minecraft:lantern"))
         self._fence    = Block(palette_get(palette, "fence", "minecraft:oak_fence"))
