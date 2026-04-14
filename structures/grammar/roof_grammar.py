@@ -222,7 +222,7 @@ def _cross_arm_params(
         # Arm extends along Z (south or north). Perpendicular span is X.
         south = (side == "south")
         return dict(
-            inner_start    = rc.rz1 - 1  if south else rc.rz0,
+            inner_start    = rc.rz1  if south else rc.rz0,
             inner_step     = -1           if south else  1,
             stair_range    = (lambda iz: range(iz + 1, rc.rz1)) if south else (lambda iz: range(rc.rz0, iz)),
             perp_a         = lambda layer: rc.mid_x - (peak - layer),
@@ -235,14 +235,14 @@ def _cross_arm_params(
             make_pos_arm   = lambda perp, y, along: (perp, y, along),
             make_pos_ridge = lambda r, ry: (rc.mid_x, ry, r),
             ridge_range    = range(rc.mid_z + 1, rc.rz1) if south else range(rc.rz0, rc.mid_z + 1),
-            gable_face     = rc.rz1 - 2  if south else rc.rz0 + 1,
+            gable_face     = rc.rz1 - 1  if south else rc.rz0 + 1,
             arm_rc         = _ArmRC(rc.mid_x - peak, rc.mid_x + peak + 1, rc.rz0, rc.rz0 + 2 * peak + 2, rc.ry),
         )
     else:
         # Arm extends along X (east or west). Perpendicular span is Z.
         east = (side == "east")
         return dict(
-            inner_start    = rc.rx1 - 1  if east else rc.rx0,
+            inner_start    = rc.rx1  if east else rc.rx0,
             inner_step     = -1           if east else  1,
             stair_range    = (lambda ix: range(ix + 1, rc.rx1)) if east else (lambda ix: range(rc.rx0, ix)),
             perp_a         = lambda layer: rc.mid_z - (peak - layer),
@@ -255,7 +255,7 @@ def _cross_arm_params(
             make_pos_arm   = lambda perp, y, along: (along, y, perp),
             make_pos_ridge = lambda r, ry: (r, ry, rc.mid_z),
             ridge_range    = range(rc.mid_x + 1, rc.rx1) if east else range(rc.rx0, rc.mid_x + 1),
-            gable_face     = rc.rx1 - 2  if east else rc.rx0 + 1,
+            gable_face     = rc.rx1 - 1  if east else rc.rx0 + 1,
             arm_rc         = _ArmRC(rc.rx0, rc.rx0 + 2 * peak + 2, rc.mid_z - peak, rc.mid_z + peak + 1, rc.ry),
         )
     

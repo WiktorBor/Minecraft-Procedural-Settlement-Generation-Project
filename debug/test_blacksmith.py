@@ -120,7 +120,7 @@ def main() -> None:
     )
 
     # Call the new functional orchestrator
-    build_blacksmith(ctx, plot, palette)
+    build_blacksmith(ctx, plot)
 
     if not buffer:
         logger.error("Build failed: Buffer is empty. Check plot constraints.")
