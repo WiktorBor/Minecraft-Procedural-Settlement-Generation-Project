@@ -23,7 +23,7 @@ class MaterialRole(Enum):
 # DISTRICT MEMORY - prevent repetition and enforece coherence
 class DistrictMemory:
     """Tracks materials used in district for anti-clustering"""
-    def __init__(self, district_id: int, history_length: int = 3):
+    def __init__(self, district_id: int, history_length: int = 2):
         self.district_id = district_id
         self.history = deque(maxlen=history_length)
 
@@ -50,48 +50,11 @@ class PaletteSystem:
         """
         return {
             # Stone materials are compatible with warm wood
-            "stone_bricks": {
-                "stripped_oak_log": 0.95,
-                "oak_log": 0.93,
-                "dark_oak_log": 0.90,
-                "spruce_log": 0.70,
-                "jungle_log": 0.65,
-                "prismarine_bricks": 0.30,
-            },
-            
-            # Sandstone pairs with acacia
-            "sandstone": {
-                "acacia_log": 0.95,
-                "stripped_acacia_log": 0.93,
-                "oak_log": 0.70,
-            },
-            
-            # Mossy stone with jungle materials
-            "mossy_stone_bricks": {
-                "jungle_log": 0.95,
-                "mangrove_log": 0.92,
-                "oak_log": 0.85,
-            },
-            
-            # Prismarine with oak/spruce
-            "prismarine_bricks": {
-                "oak_log": 0.90,
-                "spruce_log": 0.88,
-            },
-            
-            # Deepslate with spruce
-            "deepslate_bricks": {
-                "spruce_log": 0.95,
-                "stripped_spruce_log": 0.93,
-            },
-            
-            # Red sandstone with dark oak
-            "red_sandstone": {
-                "dark_oak_log": 0.95,
-                "stripped_dark_oak_log": 0.93,
-            },
-            
-            # Default: assume medium compatibility
+            "stone_bricks": {"stripped_oak_log": 0.95, "oak_log": 0.93, "dark_oak_log": 0.90, "spruce_log": 0.70},
+            "sandstone": {"acacia_log": 0.95, "stripped_acacia_log": 0.93, "oak_log": 0.70},
+            "mossy_stone_bricks": {"jungle_log": 0.95, "mangrove_log": 0.92, "oak_log": 0.85},
+            "deepslate_bricks": {"spruce_log": 0.95, "stripped_spruce_log": 0.93},
+            "red_sandstone": {"dark_oak_log": 0.95, "stripped_dark_oak_log": 0.93},
             "_default": 0.60,
         }
 
@@ -110,8 +73,7 @@ class PaletteSystem:
             try:
                 # Convert world coordinates to local array indices
                 li, lj = area.world_to_index(wx, wz)
-                # Use surface_blocks as the primary hint for _resolve_archetype
-                biome_hint = str(analysis.surface_blocks[li, lj])
+                biome_hint = str(analysis.biomes[li, lj]).lower()
             except (ValueError, IndexError):
                 biome_hint = "plains"
                 logger.warning(
@@ -152,23 +114,21 @@ class PaletteSystem:
         # remove namespace and case sensitivity
         name = biome_name.lower().replace("minecraft:", "")
 
-        # 1 priority layer: Specific Biomes (The "Special Look" overrides)
-        if "savanna" in name: return "SAVANNA"  # Acacia/Orange wood focus
-        if "badlands" in name or "mesa" in name: return "BADLANDS" # Terracotta/Red Sandstone focus
-        if "cherry" in name: return "CHERRY_GROVE" # Pink/Oriental aesthetic
-
-        # 2. environmental layer: Climate Grouping
-        # FROZEN: If it sounds cold, it gets the winter palette
-        if any(word in name for word in ["ice", "snow", "frozen", "taiga", "slopes", "jagged"]): return "FROZEN"
-        # ARID: High heat, low moisture (primarily Deserts)
-        if any(word in name for word in ["desert", "dunes"]): return "ARID"
-        # LUSH: High moisture, dense vegetation
-        if any(word in name for word in ["jungle", "swamp", "mangrove", "bamboo"]): return "LUSH"
-        # AQUATIC: Near or in water (influences foundation/materials)
-        if any(word in name for word in ["ocean", "river", "beach", "coast"]): return "AQUATIC"
-        
-        # 3. default: The "Medieval/Standard" fallback
-        return "TEMPERATE"    #Plains, Forest, Meadow, Birch Forest...
+        # 2. Specific Biome Overrides
+        if "cherry" in name: return "CHERRY_GROVE"
+        if "savanna" in name: return "SAVANNA"
+        if any(w in name for w in ["badlands", "mesa", "terracotta", "red_sand"]): 
+            return "BADLANDS"
+        # 3. Other Climates
+        if any(w in name for w in ["jungle", "swamp", "mangrove", "bamboo", "moss", "lush", "mud", "vine", "podzol"]): 
+            return "LUSH"
+        if any(w in name for w in ["ice", "snow", "frozen", "taiga", "powder"]): 
+            return "FROZEN"
+        if any(w in name for w in ["desert", "sand", "dunes", "cactus"]): 
+            return "ARID"
+        if any(w in name for w in ["ocean", "river", "beach", "water", "prismarine"]):
+            return "AQUATIC"
+        return "TEMPERATE"
     
     # 2. district theme creation/retrieval
     def _get_or_create_district(self, district_id: int) -> DistrictMemory:
@@ -186,19 +146,27 @@ class PaletteSystem:
         # Weighted primary wall selection with anti-clustering
         primary_wall = self._get_weighted_variant(lib["structure"]["primary_wall"])
         # Anti-clustering: re-roll if same as last few
-        attempts = 0
-        while district_memory.is_overused(primary_wall) and attempts < 3:
+        for _ in range(5):
+            if not district_memory.is_overused(primary_wall): break
             primary_wall = self._get_weighted_variant(lib["structure"]["primary_wall"])
-            attempts += 1
         district_memory.add_building(primary_wall)
 
         #roof selection with anti-clustering
-        roof_set = self._get_weighted_variant(lib["structure"]["roof"])
-        attempts_roof = 0
-        while district_memory.is_overused(roof_set['label']) and attempts_roof < 3:
-            roof_set = self._get_weighted_variant(lib["structure"]["roof"])
-            attempts_roof += 1
-        district_memory.add_building(roof_set['label'])
+        roof_options = lib["structure"]["roof"]
+        roof_set = self._get_weighted_variant(roof_options)
+        roof_label = roof_set['label'] if isinstance(roof_set, dict) else str(roof_set)
+        for i in range(6):
+            # Check the label to see if we've used this wood/stone type recently
+            if not district_memory.is_overused(roof_set.get('label', 'default')): 
+                break
+            
+            # If we are failing to find variety, force a random uniform choice
+            if i > 5 and isinstance(roof_options, dict) and "variants" in roof_options:
+                roof_set = random.choice(roof_options["variants"])
+            else:
+                roof_set = self._get_weighted_variant(roof_options)
+        
+        district_memory.add_building(roof_label)
 
         accent_raw = lib["structure"]["accent"]
         accent = self._pick_compatible_material(primary_wall, accent_raw)
@@ -207,28 +175,20 @@ class PaletteSystem:
         # Compose base palette
         palette = {
             "archetype": archetype,
-            
-            # Role: CORE (structural)
             "role:core": [
                 f"minecraft:{primary_wall}",
                 f"minecraft:{lib['structure']['foundation']}",
                 f"minecraft:{roof_set['label']}",
             ],
-            
-            # Role: ACCENT (decorative)
             "role:accent": [
                 f"minecraft:{accent}",
                 accent_beam,
             ],
-            
-            # Role: UTILITY (functional)
             "role:utility": [
                 "minecraft:oak_door",
                 "minecraft:oak_fence",
                 f"minecraft:{roof_set['slab']}",
             ],
-            
-            # Role: LIGHT (atmospheric)
             "role:light": [
                 "minecraft:lantern",
                 "minecraft:soul_lantern" if archetype == "FROZEN" else "minecraft:lantern",
@@ -306,13 +266,6 @@ class PaletteSystem:
         key = f"role:{role.name.lower()}"
         return palette.get(key, [palette.get("wall", "minecraft:stone")])
     
-    def get_district_material(self, palette: dict, key: str, district_type: str = "residential") -> str:
-        """Fix #4: Per-building resampling."""
-        if key in palette: return palette[key]
-        arch = palette.get("archetype", "TEMPERATE")
-        options = self.MATERIAL_LIBRARY[arch]["districts"].get(district_type, {}).get(key, "oak_log")
-        return f"minecraft:{self._get_weighted_variant(options)}"
-    
     #4 road components :stairs/slabs; main/path
     def get_road_component(self, biome_name: str, is_main: bool, component_type: str = "base", existing_block: str = None) -> str:
         """Returns a road block for biome archetype (base, stair, slab, edge)."""
@@ -357,3 +310,27 @@ class PaletteSystem:
 def palette_get(palette: dict, key: str,default: str = "minecraft:stone") -> str:
     """Safe get for palette with default fallback."""
     return palette.get(key, default)
+
+def test_archetype_resolution():
+    ps = PaletteSystem()
+    
+    # Test cases representing what analysis.surface_blocks might return
+    test_scenarios = [
+        ("Sand in Desert", "minecraft:sand", "ARID"),
+        ("Sand on Beach", "minecraft:beach", "AQUATIC"),
+        ("Snow in Taiga", "minecraft:snow_block", "FROZEN"),
+        ("Mud in Swamp", "minecraft:mud", "LUSH"),
+        ("Jungle Log", "minecraft:jungle_log", "LUSH"),
+        ("The Problem Case", "minecraft:grass_block", "LUSH"), # This usually fails
+    ]
+
+    print(f"{'INPUT BLOCK':<25} | {'EXPECTED':<12} | {'RESULT':<12} | {'STATUS'}")
+    print("-" * 70)
+
+    for description, block, expected in test_scenarios:
+        actual = ps._resolve_archetype(block)
+        status = "✅ PASS" if actual == expected else "❌ FAIL (Got " + actual + ")"
+        print(f"{block:<25} | {expected:<12} | {actual:<12} | {status}")
+
+if __name__ == "__main__":
+    test_archetype_resolution()

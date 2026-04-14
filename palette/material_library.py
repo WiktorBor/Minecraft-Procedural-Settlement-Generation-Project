@@ -33,7 +33,7 @@ MATERIAL_LIBRARY = {
                         "slab": "deepslate_tile_slab"
                     }
                 ],
-                "weights": [0.1, 0.5, 0.4]
+                "weights": [0.2, 0.3, 0.5]
             },
             "decor": {
                 "chimney": ["bricks", "cobblestone"],
@@ -122,7 +122,7 @@ MATERIAL_LIBRARY = {
                     {"label": "mangrove", "block": "mangrove_planks", "stairs": "mangrove_stairs", "slab": "mangrove_slab"},
                     {"label": "mud_brick", "block": "mud_bricks", "stairs": "mud_brick_stairs", "slab": "mud_brick_slab"}
                 ],
-                "weights": [0.4, 0.4, 0.2]
+                "weights": [0.3, 0.4, 0.3]
             },
             "decor": {
                 "chimney": ["mossy_cobblestone", "mud_bricks"],
@@ -209,7 +209,7 @@ MATERIAL_LIBRARY = {
                     {"label": "dark_oak", "block": "dark_oak_planks", "stairs": "dark_oak_stairs", "slab": "dark_oak_slab"},
                     {"label": "red_sandstone", "block": "red_sandstone", "stairs": "red_sandstone_stairs", "slab": "red_sandstone_slab"}
                 ],
-                "weights": [0.6, 0.4]
+                "weights": [0.3, 0.7]
             },
             "decor": {
                 "chimney": ["red_sandstone_wall"],
@@ -223,8 +223,8 @@ MATERIAL_LIBRARY = {
             "centre": {"plaza": ["smooth_red_sandstone"], "monument": ["gold_block"]}
         },
         "roads": {
-            "main": {"variants": ["red_sandstone", "polished_granite"], "weights": [0.6, 0.4]},
-            "path": {"variants": ["red_terracotta", "coarse_dirt"], "weights": [0.7, 0.3]},
+            "main": {"variants": ["red_sandstone", "polished_granite"], "weights": [0.3, 0.7]},
+            "path": {"variants": ["red_terracotta", "coarse_dirt"], "weights": [0.3, 0.7]},
             "edge": "red_sandstone_slab"
         }
     }
