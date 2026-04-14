@@ -7,6 +7,7 @@ from palette.material_library import MATERIAL_LIBRARY
 import logging
 
 logger = logging.getLogger(__name__)
+
 """
 paletteSystem returns materials for buildings and roads based on biome archetype, district theme.
 Handle weighted variennts and anti-clustering district.
@@ -22,22 +23,24 @@ class MaterialRole(Enum):
     
 # DISTRICT MEMORY - prevent repetition and enforece coherence
 class DistrictMemory:
-    """Tracks materials used in district for anti-clustering"""
+    """Tracks materials used in a district for anti-clustering."""
+
     def __init__(self, district_id: int, history_length: int = 3):
         self.district_id = district_id
-        self.history = deque(maxlen=history_length)
+        self.history: deque[str] = deque(maxlen=history_length)
 
-    def add_building(self, material: str):
-        """Record material usage for anti-clustering check"""
+    def add_building(self, material: str) -> None:
         self.history.append(material)
-    
+
     def is_overused(self, material: str) -> bool:
-        """Check if material appeared too recently"""
         return material in self.history
 
-# intelligent palette system
+
+# ── Palette System ───────────────────────────────────────────────────────────
+
 class PaletteSystem:
     """Environment-aware, archetype-driven palette system + road."""
+
     def __init__(self):
         self.district_memories: Dict[int, DistrictMemory] = {}
         self.MATERIAL_LIBRARY = MATERIAL_LIBRARY
@@ -95,97 +98,113 @@ class PaletteSystem:
             "_default": 0.60,
         }
 
+    # ── Public entry point ──────────────────────────────────────────────────
+
     def generate(self, analysis, districts) -> Dict[int, Any]:
         """
-        Modified to accept WorldAnalysisResult.
         Generates a BiomePalette for every district in one pass.
+        Accepts a WorldAnalysisResult and a Districts object.
         """
         palettes: Dict[int, Any] = {}
         area = analysis.best_area
+
         for idx, dtype in districts.types.items():
             district = districts.district_list[idx]
             wx, wz = int(district.center_x), int(district.center_z)
 
-            # Sample the biome/surface from the analysis array
             try:
-                # Convert world coordinates to local array indices
                 li, lj = area.world_to_index(wx, wz)
-                # Use surface_blocks as the primary hint for _resolve_archetype
                 biome_hint = str(analysis.surface_blocks[li, lj])
             except (ValueError, IndexError):
                 biome_hint = "plains"
                 logger.warning(
-                    "  District %d (%s): centre (%d, %d) outside analysis area — defaulting biome hint to 'plains'.",
+                    "  District %d (%s): centre (%d, %d) outside analysis area "
+                    "— defaulting biome hint to 'plains'.",
                     idx, dtype, wx, wz,
                 )
 
-            # Create the building palette
             palette = self.create_palette(
                 district_id=idx,
                 biome_name=biome_hint,
-                district_type=dtype
+                district_type=dtype,
             )
             logger.info(
                 "  District %d (%s): surface=%r → archetype=%s  wall=%s  roof=%s",
-                idx, dtype, biome_hint, palette["archetype"],
-                palette.get("wall"), palette.get("roof_block"),
+                idx, dtype, biome_hint,
+                palette["archetype"], palette.get("wall"), palette.get("roof_block"),
             )
 
-            # Inject road materials into the same palette object for the builders
+            # Road materials — derive path_slab from the same block as path
+            palette["path"]       = self.get_road_material(biome_hint, is_main=False)
+            path_base_block = palette["path"].replace("minecraft:", "")
+            palette["path_edge"]  = self.get_road_component(biome_hint, is_main=False, component_type="edge")
+            palette["path_slab"]  = self.get_road_component(
+                biome_hint, is_main=False, component_type="slab",
+                existing_block=path_base_block,
+            )
+
             palettes[idx] = palette
-            
+
         return palettes
 
-    # Weighted choice utility
+    # ── Internal helpers ────────────────────────────────────────────────────
+
     def _get_weighted_variant(self, variant_data: Any) -> str:
-        """Pick a material based on weights"""
-        if isinstance(variant_data, dict) and "variants" in variant_data:
-            return random.choices(variant_data["variants"], weights=variant_data.get("weights"), k=1)[0]
-        # List: ["stone", "cobblestone", "andesite"]
+        """Pick a material respecting optional weights."""
+        if isinstance(variant_data, dict):
+            return random.choices(
+                variant_data["variants"],
+                weights=variant_data.get("weights"),
+                k=1
+            )[0]
         if isinstance(variant_data, list):
             return random.choice(variant_data)
-        #Raw String: "oak_planks"
         return str(variant_data)
-            
+
     def _resolve_archetype(self, biome_name: str = "") -> str:
-        """resolve raw biome name to archetype using a Priority-Ordered Keyword strategy to handle vanilla & modded biomes."""
-        # remove namespace and case sensitivity
+        """
+        Resolve a raw biome name (possibly namespaced) to a library archetype
+        using priority-ordered keyword matching.
+        """
         name = biome_name.lower().replace("minecraft:", "")
 
-        # 1 priority layer: Specific Biomes (The "Special Look" overrides)
-        if "savanna" in name: return "SAVANNA"  # Acacia/Orange wood focus
-        if "badlands" in name or "mesa" in name: return "BADLANDS" # Terracotta/Red Sandstone focus
-        if "cherry" in name: return "CHERRY_GROVE" # Pink/Oriental aesthetic
+        # 1. Specific biomes (highest priority overrides)
+        if "savanna"                       in name: return "SAVANNA"
+        if "badlands" in name or "mesa"    in name: return "BADLANDS"
+        if "cherry"                        in name: return "CHERRY_GROVE"
 
-        # 2. environmental layer: Climate Grouping
-        # FROZEN: If it sounds cold, it gets the winter palette
-        if any(word in name for word in ["ice", "snow", "frozen", "taiga", "slopes", "jagged"]): return "FROZEN"
-        # ARID: High heat, low moisture (primarily Deserts)
-        if any(word in name for word in ["desert", "dunes"]): return "ARID"
-        # LUSH: High moisture, dense vegetation
-        if any(word in name for word in ["jungle", "swamp", "mangrove", "bamboo"]): return "LUSH"
-        # AQUATIC: Near or in water (influences foundation/materials)
-        if any(word in name for word in ["ocean", "river", "beach", "coast"]): return "AQUATIC"
-        
-        # 3. default: The "Medieval/Standard" fallback
-        return "TEMPERATE"    #Plains, Forest, Meadow, Birch Forest...
-    
-    # 2. district theme creation/retrieval
+        # 2. Climate groupings
+        if any(w in name for w in ["ice", "snow", "frozen", "taiga", "slopes", "jagged"]):
+            return "FROZEN"
+        if any(w in name for w in ["desert", "dunes"]):
+            return "ARID"
+        if any(w in name for w in ["jungle", "swamp", "mangrove", "bamboo"]):
+            return "LUSH"
+        if any(w in name for w in ["ocean", "river", "beach", "coast"]):
+            return "AQUATIC"
+
+        # 3. Default fallback
+        return "TEMPERATE"
+
     def _get_or_create_district(self, district_id: int) -> DistrictMemory:
         if district_id not in self.district_memories:
             self.district_memories[district_id] = DistrictMemory(district_id)
         return self.district_memories[district_id]
-    
-    # core: create palette
-    def create_palette(self, district_id: int,
-                       biome_name: str = "", district_type: str = "residential") -> dict:
+
+    # ── Core palette builder ────────────────────────────────────────────────
+
+    def create_palette(
+        self,
+        district_id: int,
+        biome_name: str = "",
+        district_type: str = "residential",
+    ) -> dict:
         archetype = self._resolve_archetype(biome_name)
         lib = self.MATERIAL_LIBRARY.get(archetype, self.MATERIAL_LIBRARY["TEMPERATE"])
         district_memory = self._get_or_create_district(district_id)
 
-        # Weighted primary wall selection with anti-clustering
+        # Weighted primary wall with anti-clustering re-roll
         primary_wall = self._get_weighted_variant(lib["structure"]["primary_wall"])
-        # Anti-clustering: re-roll if same as last few
         attempts = 0
         while district_memory.is_overused(primary_wall) and attempts < 3:
             primary_wall = self._get_weighted_variant(lib["structure"]["primary_wall"])
@@ -200,72 +219,57 @@ class PaletteSystem:
             attempts_roof += 1
         district_memory.add_building(roof_set['label'])
 
-        accent_raw = lib["structure"]["accent"]
-        accent = self._pick_compatible_material(primary_wall, accent_raw)
-        is_wood = any(x in accent for x in ["log", "stem", "wood", "hyphae"])
-        accent_beam = f"minecraft:stripped_{accent}" if is_wood and "stripped" not in accent else f"minecraft:{accent}"
-        # Compose base palette
-        palette = {
-            "archetype": archetype,
-            
-            # Role: CORE (structural)
-            "role:core": [
-                f"minecraft:{primary_wall}",
-                f"minecraft:{lib['structure']['foundation']}",
-                f"minecraft:{roof_set['label']}",
-            ],
-            
-            # Role: ACCENT (decorative)
-            "role:accent": [
-                f"minecraft:{accent}",
-                accent_beam,
-            ],
-            
-            # Role: UTILITY (functional)
-            "role:utility": [
-                "minecraft:oak_door",
-                "minecraft:oak_fence",
-                f"minecraft:{roof_set['slab']}",
-            ],
-            
-            # Role: LIGHT (atmospheric)
-            "role:light": [
-                "minecraft:lantern",
-                "minecraft:soul_lantern" if archetype == "FROZEN" else "minecraft:lantern",
-            ],
-            
-            # Flat structure for backward compatibility
-            "wall": f"minecraft:{primary_wall}",
-            "foundation": f"minecraft:{lib['structure']['foundation']}",
-            "accent": f"minecraft:{accent}",
-            "roof_block": f"minecraft:{roof_set['block']}",
+        accent = self._get_weighted_variant(lib["structure"]["accent"])
+
+        # Rule: if the accent is already a log block, the beam IS the accent.
+        # Otherwise derive the stripped variant by prepending "stripped_".
+        # This avoids "stripped_stripped_..." and handles all log name forms cleanly.
+        if "_log" in accent:
+            if accent.startswith("stripped_"):
+                accent_beam = accent                          # already stripped
+            else:
+                accent_beam = f"stripped_{accent}"           # e.g. oak_log -> stripped_oak_log
+        else:
+            accent_beam = accent                             # non-log accent, use as-is
+
+        palette: dict = {
+            "archetype":   archetype,
+            "wall":        f"minecraft:{primary_wall}",
+            "foundation":  f"minecraft:{lib['structure']['foundation']}",
+            "accent":      f"minecraft:{accent}",
+            "accent_beam": f"minecraft:{accent_beam}",
+            "roof_block":  f"minecraft:{roof_set['block']}",
             "roof_stairs": f"minecraft:{roof_set['stairs']}",
-            "roof_slab": f"minecraft:{roof_set['slab']}",
-            "accent_beam": accent_beam,
+            "roof_slab":   f"minecraft:{roof_set['slab']}"
         }
 
-        # Add decor with safe list handling
+        # Decor entries (lists or raw strings)
         for key, value in lib["structure"]["decor"].items():
             if isinstance(value, list):
                 palette[key] = f"minecraft:{random.choice(value)}"
             else:
                 palette[key] = f"minecraft:{value}"
-        
+
+        # Safe defaults for keys builders always expect
         if "door" not in palette:
             palette["door"] = "minecraft:oak_door"
-            logger.debug("  [palette] 'door' not in decor — defaulting to oak_door")
+            logger.debug("  [palette] 'door' missing — defaulting to oak_door")
         if "fence" not in palette:
             palette["fence"] = "minecraft:oak_fence"
-            logger.debug("  [palette] 'fence' not in decor — defaulting to oak_fence")
+            logger.debug("  [palette] 'fence' missing — defaulting to oak_fence")
         if "floor" not in palette:
-            floor_val = f"minecraft:{primary_wall}" if "_planks" in primary_wall else "minecraft:oak_planks"
+            floor_val = (
+                f"minecraft:{primary_wall}"
+                if "_planks" in primary_wall
+                else "minecraft:oak_planks"
+            )
             palette["floor"] = floor_val
-            logger.debug("  [palette] 'floor' not in decor — defaulting to %s", floor_val)
+            logger.debug("  [palette] 'floor' missing — defaulting to %s", floor_val)
         if "interior_light" not in palette:
             palette["interior_light"] = "minecraft:pearlescent_froglight"
-            logger.debug("  [palette] 'interior_light' not in decor — defaulting to pearlescent_froglight")
+            logger.debug("  [palette] 'interior_light' missing — defaulting to pearlescent_froglight")
 
-        # Merge district-specific overrides
+        # District-specific overrides
         district_data = lib["districts"].get(district_type, {})
         for k, v in district_data.items():
             if isinstance(v, list):
@@ -280,6 +284,18 @@ class PaletteSystem:
         }
 
         return palette
+    
+    def _to_singular(self, block_name: str) -> str:
+        """
+        Cleans block names (e.g., 'stone_bricks' -> 'stone_brick') 
+        to help find matching stairs and slabs.
+        """
+        name = block_name.replace("minecraft:", "")
+        # Standard Minecraft naming convention for stairs/slabs 
+        # usually drops the 's' from bricks.
+        if name.endswith("bricks"):
+            return name[:-1] 
+        return name
     
     def _pick_compatible_material(self, primary_wall: str, accent_options) -> str:
         """Pick accent material based on affinity with wall."""
@@ -320,40 +336,92 @@ class PaletteSystem:
         archetype_data = self.MATERIAL_LIBRARY.get(archetype, self.MATERIAL_LIBRARY["TEMPERATE"])
         road_cfg = archetype_data.get("roads", self.MATERIAL_LIBRARY["TEMPERATE"]["roads"])
 
-        #existing block to avoid double randomisation
+        if component_type == "edge":
+            return f"minecraft:{road_cfg.get('edge', 'cobblestone_slab')}"
+
+        # Resolve or reuse the base block
         if existing_block:
             base_block = existing_block.replace("minecraft:", "")
         else:
             variant_data = road_cfg["main" if is_main else "path"]
-            base_block = self._get_weighted_variant(variant_data) if isinstance(variant_data, dict) else variant_data
+            base_block = (
+                self._get_weighted_variant(variant_data)
+                if isinstance(variant_data, dict)
+                else variant_data
+            )
 
-        if component_type == "edge": return f"minecraft:{road_cfg.get('edge', 'cobblestone_slab')}"
-        if component_type == "base": return f"minecraft:{base_block}"
-        
-        # base block -deal with block name conversion issues (3)
-        clean_base = base_block.replace("_planks", "").replace("planks", "").replace("bricks", "brick")
-        if clean_base.endswith("s") and not clean_base.endswith("ss"): clean_base = clean_base[:-1]
+        if component_type == "base":
+            return f"minecraft:{base_block}"
 
-        suffix = "_stairs" if component_type == "stair" else "_slab"
-        key = f"{clean_base}{suffix}"
-        return f"minecraft:{key}" if self._block_exists(key, base_block) else f"minecraft:oak{suffix}"
-    
+        singular = self._to_singular(base_block)
+
+        if component_type == "stair":
+            stair_key = f"{singular}_stairs"
+            return (
+                f"minecraft:{stair_key}"
+                if self._block_exists(stair_key, base_block)
+                else "minecraft:oak_stairs"
+            )
+
+        if component_type == "slab":
+            slab_key = f"{singular}_slab"
+            return (
+                f"minecraft:{slab_key}"
+                if self._block_exists(slab_key, base_block)
+                else "minecraft:oak_slab"
+            )
+
+        raise ValueError(f"Unknown road component_type: {component_type!r}")
+
     def get_road_material(self, biome_name: str, is_main: bool = True) -> str:
         return self.get_road_component(biome_name, is_main, component_type="base")
-    
-    #check block existence
-    def _block_exists(self, key: str, base: str) -> bool:
-        invalid_exact = {"dirt_path", "gravel", "grass_block", "coarse_dirt", "mud", "moss_block", "smooth_stone", "stone","terracotta"}
-        if base in invalid_exact:
-            return False
-        # block containing keyword lacks variants: 'white_wool', 'blue_concrete', 'glass_pane'...
-        invalid_categories = ["wool", "glass", "concrete", "powder", "ice", "leaves"]
-        if any(category in base for category in invalid_categories):
-            return False
 
-        # fallback: Sandstone, Bricks, Tiles, Planks
+    def _block_exists(self, key: str, base: str) -> bool:
+        """
+        Heuristic: certain block categories do not have stair/slab variants
+        and should fall back to oak equivalents.
+        """
+        no_variants = {
+            "dirt_path", "gravel", "grass_block", "coarse_dirt",
+            "mud", "moss_block", "smooth_stone", "stone", "terracotta",
+            "packed_ice", "snow_block", "red_terracotta",
+        }
+        if base in no_variants:
+            return False
+        invalid_categories = ["wool", "glass", "concrete", "powder", "ice", "leaves"]
+        if any(cat in base for cat in invalid_categories):
+            return False
         return True
-    
-def palette_get(palette: dict, key: str,default: str = "minecraft:stone") -> str:
-    """Safe get for palette with default fallback."""
+
+
+# ── Module-level convenience helpers ────────────────────────────────────────
+
+def palette_get(palette: dict, key: str, default: str = "minecraft:stone") -> str:
+    """Safe getter with fallback for palette dicts."""
     return palette.get(key, default)
+
+
+_FALLBACK_BIOME = "plains"
+
+
+def get_biome_palette(biome_type: str = _FALLBACK_BIOME, district_id: int = 0) -> dict:
+    """
+    Compatibility wrapper for older code that called get_biome_palette() directly.
+    Delegates to PaletteSystem.create_palette().
+    """
+    system = PaletteSystem()
+    try:
+        return system.create_palette(
+            district_id=district_id,
+            biome_name=biome_type,
+            district_type="residential",
+        )
+    except Exception as e:
+        logger.warning(
+            "Error generating palette for %r (%s) — falling back to %r.",
+            biome_type, str(e), _FALLBACK_BIOME,
+        )
+        return system.create_palette(
+            district_id=district_id,
+            biome_name=_FALLBACK_BIOME,
+        )

@@ -9,6 +9,7 @@ from planning.settlement_planner import SettlementPlanner
 from generators.settlement_generator import SettlementGenerator
 from utils.http_client import GDMCClient
 from world_interface.terrain_loader import TerrainLoader
+from world_interface.block_buffer import BlockBuffer
 
 
 def create_generator(editor: Editor, client: GDMCClient) -> SettlementGenerator:
@@ -27,5 +28,5 @@ def create_generator(editor: Editor, client: GDMCClient) -> SettlementGenerator:
         analyser=analyser,
         settlement_config=settlement_config,
         terrain_config=terrain_config,
-        planner=planner
+        planner=planner,
     )

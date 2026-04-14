@@ -13,18 +13,17 @@ from analysis.world_analysis import WorldAnalyser
 from data.configurations import TerrainConfig, SettlementConfig
 from data.settlement_entities import Building, Plot, RoadCell
 from data.settlement_state import SettlementState
-from structures.misc.square_centre import SquareCentre
 from utils.astar import find_path
 from utils.walkable_grid import build_cost_grid
 from palette.palette_system import PaletteSystem
 from planning.settlement_planner import SettlementPlanner
-from structures.base.structure_selector import StructureSelector
-from structures.decoration.district.district_marker import DistrictMarker
-from structures.fortification.fortification_builder import FortificationBuilder
+from structures.base.build_context import BuildContext
+from structures.structure_selector import StructureSelector
+from structures.district_structures.district_marker import DistrictMarker
 from world_interface.block_buffer import BlockBuffer
-from world_interface.road_placer import RoadBuilder
+from planning.infrastructure.road_placer import RoadBuilder
 from world_interface.structure_placer import StructurePlacer
-from world_interface.terraforming import fill_depressions, level_plot_area, recompute_all_maps
+from world_interface.terraforming import level_plot_area
 
 logger = logging.getLogger(__name__)
 
@@ -51,28 +50,27 @@ class SettlementGenerator:
 
     def generate(self) -> SettlementState:
         """Run the full settlement generation pipeline."""
-        logger.info("=" * 50)
-        logger.info("SETTLEMENT GENERATOR")
-        logger.info("=" * 50)
-
-        # --- Phase 1: World analysis + terrain fill ---
         logger.info("[Phase 1] Analysing world...")
         analysis = self.analyser.prepare()
-        logger.info("  ✓ World analysis complete. Best area: %s", analysis.best_area)
+        
+        # 1. Create the state object early
+        state = SettlementState()
 
-        logger.info("[Phase 1] Filling terrain holes...")
-        fill_depressions(editor=self.editor, analysis=analysis, config=self.terrain_config)
-        self.editor.flushBuffer()
-        recompute_all_maps(
-            self.editor, analysis, self.terrain_config,
-            terrain_loader=self.analyser.fetcher.terrain,
+        # 2. Find the optimal center from the analysis scores
+        local_i, local_j = np.unravel_index(
+            np.argmax(analysis.scores), 
+            analysis.scores.shape
         )
-        logger.info("  ✓ Terrain prepared.")
+        world_x, world_z = analysis.best_area.index_to_world(local_i, local_j)
+        state.center = (world_x, world_z)
 
-        # --- Phase 2: District planning + palettes ---
-        logger.info("[Phase 2] District planning...")
-        state = self.planner.plan_districts(analysis)
+        # 3. Synchronize the OccupancyMap with the Best Area
         state.init_occupancy(analysis.best_area)
+
+        # --- Phase 2: District planning ---
+        logger.info("[Phase 2] District planning...")
+        # Update your planner call to use the now-initialized state
+        self.planner.plan_districts(analysis, state)
         logger.info("  ✓ %d districts ready.", len(state.districts.district_list))
 
         district_palettes = PaletteSystem().generate(analysis, state.districts)
@@ -80,26 +78,33 @@ class SettlementGenerator:
         logger.info("  ✓ Per-district palettes generated.")
 
         master_buffer = BlockBuffer()
+        # Initialize a shared BuildContext for the master settlement buffer
+        self.ctx = BuildContext(buffer=master_buffer, palette=default_palette)
 
-        # --- Phase 3a: Central plaza ---
+        # --- Phase 3: Civic Landmark (Plaza) ---
+        area = analysis.best_area
+        total_settlement_area = area.width * area.depth
+        
+        # Calculate potential plaza dimensions
         plaza_radius = state.plaza_radius
-        if plaza_radius > 0:
+        plaza_side = plaza_radius * 2
+        plaza_area = plaza_side * plaza_side
+
+        if plaza_radius > 0 and (plaza_area / total_settlement_area) <= 0.15:
             cx, cz = state.plaza_center
             logger.info(
-                "[Phase 3a] Placing %s plaza (radius=%d) at (%d, %d)...",
-                "big" if plaza_radius >= 8 else "small", plaza_radius, cx, cz,
+                "[Phase 3a] Placing %s plaza (radius=%d) at (%d, %d)..."
             )
-            area   = analysis.best_area
             li, lj = area.world_to_index(cx, cz)
             cy     = int(analysis.heightmap_ground[li, lj])
 
             plaza_plot = Plot(
                 x=cx - plaza_radius, z=cz - plaza_radius,
-                width=plaza_radius * 2, depth=plaza_radius * 2, y=cy,
+                width=plaza_side, depth=plaza_side, y=cy,
+                type="plaza"
             )
-            plaza_buf = SquareCentre().build(plaza_plot, palette=default_palette)
-            if plaza_buf is not None:
-                master_buffer.merge(plaza_buf)
+            from structures.orchestrators.plaza import build_square_centre
+            build_square_centre(self.ctx, plaza_plot)
 
             road_width  = self.settlement_config.road_width
             ring_radius = plaza_radius + road_width + 1
@@ -114,26 +119,26 @@ class SettlementGenerator:
 
             ring_cells = self._generate_ring_road(cx, cz, plaza_radius, analysis, road_width)
             state.add_road_cells(ring_cells)
+            state.add_taken({(c.x, c.z) for c in ring_cells})
             logger.info("  ✓ Plaza + ring road placed (%d cells).", len(ring_cells))
+        else:
+            logger.info(
+                "[Phase 3a] Skipping plaza: radius=%d too large for area (%.2f%%).",
+                plaza_radius, (plaza_area / total_settlement_area) * 100
+            )
 
-        # --- Phase 3b: District markers (fountains / docks) ---
+        # --- Phase 3b: District markers (fountains / wells / docks) ---
         logger.info("[Phase 3b] Placing district markers...")
+        
         district_marker = DistrictMarker(
             analysis=analysis,
-            palette=default_palette,
+            ctx=self.ctx,
         )
-        marker_buffer, fountain_cells = district_marker.build(state.districts)
-        master_buffer.merge(marker_buffer)
+        fountain_cells = district_marker.build(state.districts, state.occupancy)
         state.add_taken(fountain_cells)
+        logger.info("  ✓ District markers placed (%d cells).", len(fountain_cells))
 
-        # --- Phase 3c: Central landmark tower ---
-        tower_buf, tower_taken = self._place_central_tower(state, default_palette, analysis)
-        if tower_buf is not None:
-            master_buffer.merge(tower_buf)
-        if tower_taken:
-            state.add_taken(tower_taken)
-
-        # --- Phase 3d: Road planning + placement ---
+        # --- Phase 3d: Road planning ---
         logger.info("[Phase 3d] Planning roads...")
         self.planner.plan_roads(analysis, state)
         road_builder = RoadBuilder(
@@ -166,8 +171,6 @@ class SettlementGenerator:
         area = analysis.best_area
 
         for idx, plot in enumerate(state.plots, 1):
-            # Try to resolve district from the plot centre (more reliable than
-            # the corner which may land on a road or border cell).
             pcx = plot.x + plot.width  // 2
             pcz = plot.z + plot.depth  // 2
             try:
@@ -176,8 +179,6 @@ class SettlementGenerator:
             except (ValueError, IndexError):
                 district_idx = -1
 
-            # If map lookup still gave nothing, fall back to the type stored on
-            # the plot at planning time.
             if district_idx not in selectors:
                 dtype = (plot.type or "residential").strip().lower()
                 district_idx = next(
@@ -204,50 +205,32 @@ class SettlementGenerator:
                 )
                 continue
 
-            # Clamp plot to the configured hard maximum before building.
-            max_w = self.settlement_config.max_plot_width
-            max_d = self.settlement_config.max_plot_depth
-            if plot.width > max_w or plot.depth > max_d:
-                plot.width = min(plot.width, max_w)
-                plot.depth = min(plot.depth, max_d)
-                logger.debug(
-                    "  Plot %d/%d clamped to %dx%d.",
-                    idx, len(state.plots), plot.width, plot.depth,
-                )
-
-            logger.info(
-                "  Building %d/%d: %s at (%d, %d).",
-                idx, len(state.plots), template_key, plot.x, plot.z,
-            )
-
-            # Level only the structure's actual footprint, not the full plot.
-            # House-grammar templates build within a 7-11 block window that
-            # can be smaller than the plot; all other builders fill the plot.
             struct_w, struct_d = selector.effective_footprint(plot, template_key)
-            if struct_w < plot.width or struct_d < plot.depth:
-                level_target = replace(plot, width=struct_w, depth=struct_d)
-                level_plot_area(self.editor, analysis, level_target)
-                plot.y = level_target.y
-            else:
-                level_plot_area(self.editor, analysis, plot)
-            # Flush leveling blocks before building so they're committed
-            # to Minecraft independently of the structure batch.
+            level_target = replace(plot, width=struct_w, depth=struct_d)
+            level_plot_area(self.editor, analysis, level_target)
+            plot.y = level_target.y
+            
             self.editor.flushBuffer()
 
+            # Pass context to selectors where refactored, otherwise merge results
             buf = selector.build(plot, template_key)
             if buf is None:
                 logger.warning(
-                    "  Builder '%s' failed at (%d,%d) size=%dx%d facing=%s "
-                    "— check ERROR logs from structures.base.structure_selector.",
-                    template_key, plot.x, plot.z,
-                    plot.width, plot.depth, plot.facing,
+                    "  [FAILURE] Plot %d/%d: Selector returned NONE for '%s' at (%d, %d).",
+                    idx, len(state.plots), template_key, plot.x, plot.z
                 )
             elif len(buf) == 0:
                 logger.warning(
-                    "  Builder '%s' returned empty buffer at (%d,%d) — skipping.",
-                    template_key, plot.x, plot.z,
+                    "  [EMPTY] Plot %d/%d: Buffer for '%s' is empty. Check structure constraints.",
+                    idx, len(state.plots), template_key
                 )
             else:
+                logger.info(
+                    "  [SUCCESS] Plot %d/%d: Generated '%s' with %d blocks. /tp %d %d %d",
+                    idx, len(state.plots), template_key, len(buf), plot.x, plot.y, plot.z
+                )
+    
+            if buf is not None and len(buf) > 0:
                 master_buffer.merge(buf)
 
             state.add_building(Building(
@@ -270,12 +253,14 @@ class SettlementGenerator:
 
         # --- Phase 6: Fortification ---
         logger.info("[Phase 6] Building fortification...")
-        fort_buf = FortificationBuilder(
-            analysis=analysis,
-            palette=default_palette,
-            config=self.settlement_config,
-        ).build(state.buildings)
-        master_buffer.merge(fort_buf)
+        from structures.orchestrators.fortification import build_fortification_settlement
+        # Reuse existing master context
+        wall_top_y = int(np.max(analysis.heightmap_ground))
+        build_fortification_settlement(
+            self.ctx, default_palette,
+            analysis.heightmap_ground, analysis.best_area,
+            wall_top_y, buildings=state.buildings,
+        )
         logger.info("  ✓ Fortification placed.")
 
         # --- Phase 7: Flush via StructurePlacer ---
@@ -284,158 +269,6 @@ class SettlementGenerator:
         logger.info("  ✓ All blocks placed.")
 
         return state
-
-    def _place_central_tower(
-        self,
-        state: SettlementState,
-        palette: PaletteSystem,
-        analysis,
-    ) -> set[tuple[int, int]] | None:
-        """
-        Optionally place one landmark tower somewhere near the settlement centre.
-
-        Tower type and position are chosen with aesthetic rules so the result
-        feels hand-placed rather than mechanically centred:
-
-        Type selection (weighted)
-        -------------------------
-        - SpireTower  (40 %) — tall stone spire + house wing; looks best on a
-                               slight high point; needs a 10×6 footprint.
-        - ClockTower  (35 %) — compact civic landmark; fits any 8×8 space and
-                               works well near the plaza.
-        - None        (25 %) — some settlements have no dominant tower, which
-                               adds variety between runs.
-
-        Position selection
-        ------------------
-        Candidates are sampled in a ring around the best_area centroid at radii
-        8–25 blocks (avoids the plaza, isn't on the very edge).  Each candidate
-        is scored by how much it rises above the local median height — a slight
-        elevation makes the tower look naturally placed on a hill.  The highest-
-        scoring candidate that doesn't overlap taken cells is used.  If no
-        candidate scores above 0 the centroid itself is tried as a fallback.
-
-        Returns the set of (x, z) cells occupied by the tower, or None if no
-        tower was placed.
-        """
-        # --- Roll tower type ---
-        roll = random.random()
-        if roll < 0.25:
-            logger.info("[Phase 3a.6] No central tower this run (25%% chance).")
-            return None, None
-        elif roll < 0.65:
-            tower_type = "spire"
-            min_w, min_d = 10, 6
-        else:
-            tower_type = "clock"
-            min_w, min_d = 8, 8
-
-        area = analysis.best_area
-        hmap = analysis.heightmap_ground
-
-        # best_area centroid in world coords
-        cent_x = (area.x_from + area.x_to) // 2
-        cent_z = (area.z_from + area.z_to) // 2
-
-        # Compute median height across the whole area for elevation scoring
-        median_y = int(np.median(hmap))
-
-        # --- Candidate search: ring of radii 8–25 around centroid ---
-        def _footprint_clear(wx: int, wz: int, fw: int, fd: int) -> bool:
-            """True if no occupied cell overlaps the footprint + 2-block buffer."""
-            for dx in range(-2, fw + 2):
-                for dz in range(-2, fd + 2):
-                    if (wx + dx, wz + dz) in state.occupancy:
-                        return False
-            return True
-
-        best_pos   = None
-        best_score = -999
-
-        step = 4  # angular step size — enough candidates without being slow
-        for radius in range(8, 26, 4):
-            for angle_step in range(0, 360, step):
-                rad = math.radians(angle_step)
-                wx  = cent_x + int(round(radius * math.cos(rad)))
-                wz  = cent_z + int(round(radius * math.sin(rad)))
-
-                if not area.contains_xz(wx, wz):
-                    continue
-                if not area.contains_xz(wx + min_w - 1, wz + min_d - 1):
-                    continue
-
-                li = wx - area.x_from
-                lj = wz - area.z_from
-                if not (0 <= li < hmap.shape[0] and 0 <= lj < hmap.shape[1]):
-                    continue
-
-                ground_y = int(hmap[li, lj])
-                # Prefer cells that are slightly above median (1–4 blocks) —
-                # that's a natural hilltop.  Penalise very high (cliff) or
-                # very low (valley) positions.
-                elev_diff = ground_y - median_y
-                if elev_diff < 0:
-                    score = elev_diff * 2        # strong penalty for valleys
-                elif 1 <= elev_diff <= 4:
-                    score = elev_diff * 3 + 5    # sweet spot: gentle hill
-                elif elev_diff <= 8:
-                    score = 10 - elev_diff       # acceptable but not ideal
-                else:
-                    score = -elev_diff           # cliff — penalise
-
-                # Small random jitter so identical-height candidates don't
-                # always resolve to the same compass direction each run
-                score += random.uniform(-0.5, 0.5)
-
-                water_slice = analysis.water_mask[li:li + min_w, lj:lj + min_d]
-                if water_slice.any():
-                    continue
-
-                if score > best_score and _footprint_clear(wx, wz, min_w, min_d):
-                    best_score = score
-                    best_pos   = (wx, wz)
-
-        # Fallback to centroid if no candidate found
-        if best_pos is None:
-            if _footprint_clear(cent_x, cent_z, min_w, min_d):
-                best_pos = (cent_x, cent_z)
-            else:
-                logger.info("[Phase 3a.6] No clear position for central tower — skipping.")
-                return None, None
-
-        wx, wz = best_pos
-        li     = wx - area.x_from
-        lj     = wz - area.z_from
-        wy     = int(hmap[li, lj])
-
-        plot = Plot(x=wx, z=wz, y=wy, width=min_w, depth=min_d, type="landmark")
-
-        logger.info(
-            "[Phase 3a.6] Placing central %s tower at (%d, %d) y=%d  "
-            "(elev_score=%.1f).",
-            tower_type, wx, wz, wy, best_score,
-        )
-
-        try:
-            if tower_type == "spire":
-                from structures.misc.spire_tower import SpireTower
-                tower_buf = SpireTower().build(plot, palette, analysis=analysis)
-            else:
-                from structures.misc.clock_tower import ClockTower
-                tower_buf = ClockTower().build(plot, palette)
-        except Exception:
-            logger.error(
-                "[Phase 3a.6] Central tower builder failed at (%d, %d).",
-                wx, wz, exc_info=True,
-            )
-            return None, None
-
-        footprint = {
-            (wx + dx, wz + dz)
-            for dx in range(min_w)
-            for dz in range(min_d)
-        }
-        return tower_buf, footprint
 
     def _generate_ring_road(
         self,
@@ -570,10 +403,9 @@ class SettlementGenerator:
 
             # Expand to 2-wide with organic edges so it looks like a
             # worn footpath rather than a single-pixel line.
-            bounds = (area.x_from, area.x_to, area.z_from, area.z_to)
             expanded = expand_path_to_width(
-                centerline, 2, bounds,
-                blocked=set(),
+                centerline, 2, analysis.best_area,
+                blocked=tuple(),
                 organic=True,
             )
 

@@ -61,6 +61,7 @@ from scipy.ndimage import (
     binary_closing,
     label as ndimage_label,
     uniform_filter,
+    distance_transform_edt
 )
 
 from data.analysis_results import WorldAnalysisResult
@@ -887,116 +888,67 @@ def clear_area(
 # level_plot_area
 # ---------------------------------------------------------------------------
 
-def level_plot_area(
-    editor:   Editor,
-    analysis: WorldAnalysisResult,
-    plot:     Plot,
-    *,
-    buffer:            int  = 1,
-    use_fill_command:  bool = False,
-) -> None:
+def level_plot_area(editor: Editor, analysis: any, plot: Plot, blend_radius: int = 3):
     """
-    Level the terrain under a single plot footprint to its minimum Y,
-    then update plot.y so builders start at the correct floor level.
-
-    Strategy
-    --------
-    1. Sample the ground Y at every cell in the plot footprint.
-    2. Pick the **minimum** as the target Y — building sits at the lowest
-       corner, hillsides get dug away.  No upward fill is ever done, so
-       there is no visible dirt platform around the foundation.
-    3. Cells ABOVE target: dig down to target_y with air, cap with grass_block.
-    4. Cells AT target: leave untouched (they are already solid ground).
-    5. Update analysis.heightmap_ground in-place for each modified cell.
-    6. Set plot.y = target_y so builders receive the correct floor Y.
-    7. Clear vegetation in the footprint + buffer ring (terrain height outside
-       the footprint is never modified — that prevents the dirt-ring artefact).
-
-    Parameters
-    ----------
-    buffer : int
-        How many blocks outside the footprint to clear vegetation only.
-        Default 1.  No terrain height changes happen outside the footprint.
+    Gentle Leveling: Instead of a flat cut, we create a soft transition
+    between the house foundation and the surrounding terrain.
     """
     area = analysis.best_area
-    hmap = analysis.heightmap_ground
+    hm = analysis.heightmap_ground.astype(np.float32)
+    rows, cols = hm.shape
 
-    x0, z0 = plot.x, plot.z
-    x1 = x0 + plot.width  - 1
-    z1 = z0 + plot.depth  - 1
+    clear_area(editor, analysis, plot, TerrainConfig(), buffer=blend_radius)
 
-    # ------------------------------------------------------------------
-    # 1. Collect ground Y values inside the core footprint.
-    # ------------------------------------------------------------------
-    core_ys: list[int] = []
-    for wx in range(x0, x1 + 1):
-        for wz in range(z0, z1 + 1):
-            li = wx - area.x_from
-            lj = wz - area.z_from
-            if 0 <= li < hmap.shape[0] and 0 <= lj < hmap.shape[1]:
-                core_ys.append(int(hmap[li, lj]))
+    # Convert plot world coords → local array indices, clamped to array bounds
+    ix0 = int(np.clip(plot.x - area.x_from, 0, rows))
+    ix1 = int(np.clip(plot.x - area.x_from + plot.width,  0, rows))
+    iz0 = int(np.clip(plot.z - area.z_from, 0, cols))
+    iz1 = int(np.clip(plot.z - area.z_from + plot.depth,  0, cols))
 
-    if not core_ys:
+    if ix0 >= ix1 or iz0 >= iz1:
+        # Plot footprint lies entirely outside the analysed area — skip
         return
 
-    target_y = min(core_ys)   # flatten to the lowest corner — no dirt fill needed
+    # 1. Define the footprint mask in local index space
+    mask = np.zeros((rows, cols), dtype=bool)
+    mask[ix0:ix1, iz0:iz1] = True
 
-    logger.debug(
-        "level_plot_area: plot (%d,%d) %dx%d  target_y=%d  y_range=[%d,%d]",
-        plot.x, plot.z, plot.width, plot.depth,
-        target_y, target_y, max(core_ys),
-    )
+    # 2. Target elevation — median height inside the footprint
+    footprint_heights = hm[mask]
+    if footprint_heights.size == 0 or np.all(np.isnan(footprint_heights)):
+        return
+    target_y = int(np.nanmedian(footprint_heights))
 
-    # ------------------------------------------------------------------
-    # 2. Core levelling — dig high cells down to target_y only.
-    #    Low cells are already at or below target_y (target_y IS the min),
-    #    so no upward fill is ever needed.
-    # ------------------------------------------------------------------
-    for wx in range(x0, x1 + 1):
-        for wz in range(z0, z1 + 1):
-            li = wx - area.x_from
-            lj = wz - area.z_from
-            if not (0 <= li < hmap.shape[0] and 0 <= lj < hmap.shape[1]):
-                continue
-
-            ground_y = int(hmap[li, lj])
-
-            if ground_y > target_y:
-                # Dig: clear from target_y+1 up through vegetation
-                _fill_vertical_column(
-                    editor, wx, wz, target_y + 1, ground_y + 3,
-                    "minecraft:air", use_fill_command=use_fill_command,
-                )
-                editor.placeBlock((wx, target_y, wz), Block("minecraft:grass_block"))
-                hmap[li, lj] = target_y
-
-            # else: already at target (or below — left untouched)
-
-    # ------------------------------------------------------------------
-    # 3. Vegetation clear in the footprint + buffer ring only.
-    #    Terrain HEIGHT outside the footprint is never modified here —
-    #    that was the source of the "dirt ring" artefact.
-    # ------------------------------------------------------------------
-    _VEG_KW = (
-        "log", "leaves", "vine", "sapling", "bamboo",
-        "grass", "fern", "flower", "mushroom",
-    )
-    for wx in range(x0 - buffer, x1 + buffer + 1):
-        for wz in range(z0 - buffer, z1 + buffer + 1):
-            li = wx - area.x_from
-            lj = wz - area.z_from
-            if not (0 <= li < hmap.shape[0] and 0 <= lj < hmap.shape[1]):
-                continue
-            ground_y = int(hmap[li, lj])
-            for y in range(ground_y, ground_y + 12):
-                block_id = editor.getBlock((wx, y, wz)).id.lower()
-                if any(kw in block_id for kw in _VEG_KW):
-                    editor.placeBlock((wx, y, wz), Block("minecraft:air"))
-
-    # ------------------------------------------------------------------
-    # 4. Update plot.y so builders start at the correct floor level.
-    # ------------------------------------------------------------------
+    # Update the plot's y so callers get the correct ground level back
     plot.y = target_y
+
+    # 3. Create a Blending Weight Map
+    dist_map = distance_transform_edt(~mask)
+    weights = np.clip(1.0 - (dist_map / max(blend_radius, 1)), 0, 1)
+    weights = 3 * weights**2 - 2 * weights**3  # smoothstep
+
+    # 4. Interpolate Heights
+    new_hm = (target_y * weights) + (hm * (1 - weights))
+
+    # 5. Apply to Minecraft only where the height actually changed
+    affected_coords = np.argwhere(weights > 0)
+    for ix, iz in affected_coords:
+        old_y = int(hm[ix, iz])
+        new_y = int(new_hm[ix, iz])
+        if old_y != new_y:
+            world_x = area.x_from + ix
+            world_z = area.z_from + iz
+            fill_column(editor, world_x, world_z, old_y, new_y, target_y)
+            hm[ix, iz] = new_y
+
+def fill_column(editor: Editor, x: int, z: int, y_from: int, y_to: int, target_y: int):
+    """Helper to handle both filling up and shaving down."""
+    if y_to > y_from: # Filling up
+        for y in range(y_from, y_to + 1):
+            editor.placeBlock((x, y, z), Block("minecraft:dirt"))
+    else: # Shaving down
+        for y in range(y_to + 1, y_from + 1):
+            editor.placeBlock((x, y, z), Block("minecraft:air"))
 
 
 # ---------------------------------------------------------------------------

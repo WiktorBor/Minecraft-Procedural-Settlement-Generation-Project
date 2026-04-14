@@ -1,139 +1,61 @@
 """
-rescore_labels.py
------------------
-Replaces the manual scores in house_labels.csv with scores from
-HouseScorer._heuristic_score(), giving a full 0.0-1.0 spread that
-the RandomForestRegressor can actually learn from.
-
-Usage
------
-    python3 rescore_labels.py \
-        --input  data/house_labels.csv \
-        --output data/house_labels_rescored.csv
-
-Then train the RF:
-    python3 -m structures.house.house_scorer \
-        --csv   data/house_labels_rescored.csv \
-        --model models/house_scorer.pkl
+train_scorer.py
+---------------
+1. Rescores house_labels.csv using the updated 9-feature HouseScorer heuristics.
+2. Trains a RandomForestRegressor on those rescored labels.
 """
 from __future__ import annotations
 
-import argparse
-import csv
-import sys
+import pandas as pd
 from pathlib import Path
+from structures.house.house_scorer import HouseScorer, HouseParams
 
-# ---------------------------------------------------------------------------
-# Inline heuristic — copied from HouseScorer so this script is self-contained
-# and can be run without importing the full project.
-# ---------------------------------------------------------------------------
-
-import numpy as np
-
-
-ROOF_TYPES = {"gabled": 0, "steep": 1, "cross": 2}
-
-
-def heuristic_score(row: dict) -> float:
-    w             = float(row["w"])
-    d             = float(row["d"])
-    wall_h        = float(row["wall_h"])
-    has_upper     = float(row["has_upper"]) > 0.5
-    has_chimney   = float(row["has_chimney"]) > 0.5
-    has_porch     = float(row["has_porch"]) > 0.5
-    has_extension = float(row["has_extension"]) > 0.5
-    roof_type     = str(row["roof_type"]).strip()
-    aspect_ratio  = max(w, d) / max(min(w, d), 1)
-
-    s = 0.5
-
-    if has_upper:
-        s += 0.15
-    if has_chimney:
-        s += 0.08
-    if has_porch:
-        s += 0.05
-    if has_extension:
-        s += 0.06
-
-    if roof_type == "cross":
-        if w >= 9 and d >= 9:
-            s += 0.05
-        else:
-            s -= 0.30
-
-    if roof_type == "steep" and w <= 7:
-        s += 0.08
-
-    if wall_h >= 5 and not has_upper:
-        s -= 0.10
-
-    if has_upper and (w < 7 or d < 7):
-        s -= 0.25
-
-    if aspect_ratio > 2.5:
-        s -= 0.10
-
-    if float(row.get("foundation_h", 1)) == 2:
-        s += 0.03
-
-    features = sum([has_upper, has_chimney, has_porch, has_extension])
-    if features == 0:
-        s -= 0.20
-
-    return float(np.clip(s, 0.0, 1.0))
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-def rescore(input_path: Path, output_path: Path) -> None:
-    rows = []
-    with open(input_path, newline="") as f:
-        reader = csv.DictReader(f)
-        fieldnames = reader.fieldnames or []
-        for row in reader:
-            row["score"] = f"{heuristic_score(row):.4f}"
-            rows.append(row)
-
-    # Ensure score column exists
-    if "score" not in fieldnames:
-        fieldnames = list(fieldnames) + ["score"]
-
-    with open(output_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-
-    scores = [float(r["score"]) for r in rows]
-    print(f"Rescored {len(rows)} rows.")
-    print(f"  min={min(scores):.2f}  max={max(scores):.2f}  "
-          f"mean={sum(scores)/len(scores):.2f}")
-    print(f"  Distribution:")
-    bands = [(0.0,0.2),(0.2,0.4),(0.4,0.6),(0.6,0.8),(0.8,1.01)]
-    for lo, hi in bands:
-        count = sum(1 for s in scores if lo <= s < hi)
-        bar   = "█" * count
-        print(f"    [{lo:.1f}-{hi:.1f})  {bar}  ({count})")
-    print(f"\nSaved to {output_path}")
-    print(f"\nNext step — train the RF model:")
-    print(f"  python3 -c \"")
-    print(f"  from structures.house.house_scorer import HouseScorer")
-    print(f"  HouseScorer.train_and_save('{output_path}', 'models/house_scorer.pkl')\"")
-
-
-def _parse() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Rescore house_labels.csv using the heuristic scorer.")
-    p.add_argument("--input",  type=Path, default=Path("data/house_labels.csv"))
-    p.add_argument("--output", type=Path, default=Path("data/house_labels_rescored.csv"))
-    return p.parse_args()
-
+def rescore_csv(input_path: str, output_path: str):
+    """
+    Uses the HouseScorer's internal heuristic logic to assign a score to 
+    every house in the CSV, ensuring the AI has consistent data to learn from.
+    """
+    df = pd.read_csv(input_path)
+    scorer = HouseScorer() # Uses internal fallback _heuristic_score logic
+    
+    new_scores = []
+    print(f"Rescoring {len(df)} samples...")
+    
+    for _, row in df.iterrows():
+        # Reconstruct the 9-feature parameter bundle from the CSV row
+        # NOTE: Ensure these column names match your house_labels.csv exactly
+        p = HouseParams(
+            w=int(row['w']), 
+            d=int(row['d']), 
+            wall_h=int(row['wall_h']),
+            structure_role=row['role'], 
+            roof_type=row['roof_type'],
+            has_upper=bool(row['has_upper']), 
+            has_chimney=bool(row['has_chimney']),
+            has_porch=bool(row['has_porch']),
+            bridge_side=row['bridge_side'] if 'bridge_side' in row else None        )
+        # Apply the heuristic 'Teacher' score
+        new_scores.append(scorer.score(p))
+    
+    df['score'] = new_scores
+    df.to_csv(output_path, index=False)
+    print(f"Success: Rescored file saved to {output_path}")
 
 if __name__ == "__main__":
-    args = _parse()
-    if not args.input.exists():
-        print(f"Error: input file not found: {args.input}", file=sys.stderr)
-        sys.exit(1)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    rescore(args.input, args.output)
+    # 1. Define Paths
+    INPUT_CSV = "training/house_labels.csv"
+    CLEANED_CSV = "training/house_labels_rescored.csv"
+    MODEL_PATH = "models/house_scorer.pkl"
+
+    # 2. Ensure directories exist
+    Path("models").mkdir(exist_ok=True)
+
+    # 3. Rescore the data (Passing BOTH arguments now)
+    if Path(INPUT_CSV).exists():
+        rescore_csv(INPUT_CSV, CLEANED_CSV)
+    else:
+        print(f"Error: Could not find {INPUT_CSV}")
+        exit(1)
+    
+    # 4. Train the actual Random Forest 'Brain' using the rescored data
+    HouseScorer.train_and_save(CLEANED_CSV, MODEL_PATH)

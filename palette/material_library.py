@@ -1,9 +1,20 @@
 """Global Material Library for Procedural Building Generation
 - Supports weighted primary wall selection
-- Fully categorized by Archetype (TEMPERATE, FROZEN, ARID, LUSH, AQUATIC)
+- Fully categorized by Archetype (TEMPERATE, FROZEN, ARID, LUSH, AQUATIC, SAVANNA, BADLANDS, CHERRY_GROVE)
 - Includes district-specific overrides
 - All decor entries are lists to avoid string-slicing bugs
--adds road materials per archetype with main/path distinction
+- Adds road materials per archetype with main/path distinction
+
+FIXES:
+- Added missing CHERRY_GROVE archetype (was referenced in palette_system but absent)
+- Replaced invalid block IDs in district floors:
+    sandstone_tiles      -> chiseled_sandstone
+    deepslate_tiles      -> deepslate_tile_bricks
+    terracotta_tiles     -> terracotta
+    prismarine_tiles     -> prismarine_bricks
+    stone_brick_tiles    -> stone_bricks
+- Replaced invalid centre blocks in SAVANNA (polished_terracotta, cut_terracotta)
+- Replaced invalid centre block in BADLANDS (sandstone_tiles)
 """
 
 MATERIAL_LIBRARY = {
@@ -42,16 +53,17 @@ MATERIAL_LIBRARY = {
             }
         },
         "districts": {
-            "fishing": {"dock": ["oak_slab"], "barrel": ["barrel"]},
-            "blacksmith": {"hearth": ["blast_furnace"], "floor": ["stone_brick_tiles"]},
-            "centre": {"plaza": ["polished_andesite"], "monument": ["smooth_stone"]}
+            "fishing":     {"dock": ["oak_slab"],            "barrel": ["barrel"]},
+            "blacksmith":  {"hearth": ["blast_furnace"],     "floor": ["stone_bricks"]},
+            "centre":      {"plaza": ["polished_andesite"],  "monument": ["smooth_stone"]}
         },
         "roads": {
-            "main": {"variants": ["stone_bricks", "cobblestone"], "weights": [0.7, 0.3]},
-            "path": {"variants": ["dirt_path", "gravel"], "weights": [0.8, 0.2]},
-            "edge": "cobblestone_slab"
+            "main":  {"variants": ["stone_bricks", "cobblestone"], "weights": [0.7, 0.3]},
+            "path":  {"variants": ["dirt_path", "gravel"],         "weights": [0.8, 0.2]},
+            "edge":  "cobblestone_slab"
         }
     },
+
     "FROZEN": {
         "structure": {
             "primary_wall": {"variants": ["deepslate_bricks", "cobblestone"], "weights": [0.7, 0.3]},
@@ -71,16 +83,18 @@ MATERIAL_LIBRARY = {
             }
         },
         "districts": {
-            "fishing": {"dock": ["spruce_slab"], "barrel": ["barrel"]},
-            "blacksmith": {"hearth": ["blast_furnace"], "floor": ["deepslate_tiles"]},
-            "centre": {"plaza": ["polished_deepslate"], "monument": ["blue_ice"]}
+            "fishing":    {"dock": ["spruce_slab"],              "barrel": ["barrel"]},
+            # FIX: deepslate_tiles -> deepslate_tile_bricks
+            "blacksmith": {"hearth": ["blast_furnace"],          "floor": ["deepslate_tile_bricks"]},
+            "centre":     {"plaza": ["polished_deepslate"],      "monument": ["blue_ice"]}
         },
         "roads": {
-            "main": {"variants": ["deepslate_bricks", "polished_andesite"], "weights": [0.6, 0.4]},
-            "path": {"variants": ["packed_ice", "snow_block"], "weights": [0.5, 0.5]},
-            "edge": "stone_brick_slab"
+            "main":  {"variants": ["deepslate_bricks", "polished_andesite"], "weights": [0.6, 0.4]},
+            "path":  {"variants": ["packed_ice", "snow_block"],              "weights": [0.5, 0.5]},
+            "edge":  "stone_brick_slab"
         }
     },
+
     "ARID": {  # Desert / Savanna / Badlands
         "structure": {
             "primary_wall": {"variants": ["sandstone", "smooth_sandstone", "cut_sandstone"], "weights": [0.6, 0.3, 0.1]},
@@ -101,16 +115,18 @@ MATERIAL_LIBRARY = {
             }
         },
         "districts": {
-            "fishing": {"dock": ["acacia_slab"], "barrel": ["barrel"]},
-            "blacksmith": {"hearth": ["blast_furnace"], "floor": ["sandstone_tiles"]},
-            "centre": {"plaza": ["polished_sandstone"], "monument": ["cut_sandstone"]}
+            "fishing":    {"dock": ["acacia_slab"],             "barrel": ["barrel"]},
+            # FIX: sandstone_tiles -> chiseled_sandstone
+            "blacksmith": {"hearth": ["blast_furnace"],         "floor": ["chiseled_sandstone"]},
+            "centre":     {"plaza": ["polished_sandstone"],     "monument": ["cut_sandstone"]}
         },
         "roads": {
-            "main": {"variants": ["cut_sandstone", "smooth_sandstone"], "weights": [0.7, 0.3]},
-            "path": {"variants": ["smooth_sandstone", "dirt_path"], "weights": [0.7, 0.3]},
-            "edge": "sandstone_slab"
+            "main":  {"variants": ["cut_sandstone", "smooth_sandstone"], "weights": [0.7, 0.3]},
+            "path":  {"variants": ["smooth_sandstone", "dirt_path"],     "weights": [0.7, 0.3]},
+            "edge":  "sandstone_slab"
         }
     },
+
     "LUSH": {  # Jungle / Swamp / Mangrove
         "structure": {
             "primary_wall": {"variants": ["mossy_stone_bricks", "mossy_cobblestone", "mud_bricks"], "weights": [0.4, 0.4, 0.2]},
@@ -131,16 +147,17 @@ MATERIAL_LIBRARY = {
             }
         },
         "districts": {
-            "fishing": {"dock": ["spruce_slab"], "barrel": ["barrel"]},
-            "blacksmith": {"hearth": ["blast_furnace"], "floor": ["mossy_cobblestone"]},
-            "centre": {"plaza": ["polished_andesite"], "monument": ["moss_block"]}
+            "fishing":    {"dock": ["spruce_slab"],             "barrel": ["barrel"]},
+            "blacksmith": {"hearth": ["blast_furnace"],         "floor": ["mossy_cobblestone"]},
+            "centre":     {"plaza": ["polished_andesite"],      "monument": ["moss_block"]}
         },
         "roads": {
-            "main": {"variants": ["mossy_stone_bricks", "mossy_cobblestone"], "weights": [0.6, 0.4]},
-            "path": {"variants": ["mud", "dirt_path"], "weights": [0.7, 0.3]},
-            "edge": "mossy_cobblestone_slab"
+            "main":  {"variants": ["mossy_stone_bricks", "mossy_cobblestone"], "weights": [0.6, 0.4]},
+            "path":  {"variants": ["mud", "dirt_path"],                        "weights": [0.7, 0.3]},
+            "edge":  "mossy_cobblestone_slab"
         }
     },
+
     "AQUATIC": {  # Ocean / River / Deep Sea
         "structure": {
             "primary_wall": {"variants": ["prismarine_bricks", "dark_prismarine"], "weights": [0.7, 0.3]},
@@ -160,16 +177,18 @@ MATERIAL_LIBRARY = {
             }
         },
         "districts": {
-            "fishing": {"dock": ["spruce_slab"], "barrel": ["barrel"]},
-            "blacksmith": {"hearth": ["blast_furnace"], "floor": ["prismarine_tiles"]},
-            "centre": {"plaza": ["prismarine"], "monument": ["sea_lantern"]}
+            "fishing":    {"dock": ["spruce_slab"],             "barrel": ["barrel"]},
+            # FIX: prismarine_tiles -> prismarine_bricks
+            "blacksmith": {"hearth": ["blast_furnace"],         "floor": ["prismarine_bricks"]},
+            "centre":     {"plaza": ["prismarine"],             "monument": ["sea_lantern"]}
         },
         "roads": {
-            "main": {"variants": ["oak_planks", "spruce_planks"], "weights": [0.8, 0.2]},
-            "path": {"variants": ["oak_slab", "spruce_slab"], "weights": [0.9, 0.1]},
-            "edge": "oak_fence"
+            "main":  {"variants": ["oak_planks", "spruce_planks"], "weights": [0.8, 0.2]},
+            "path":  {"variants": ["oak_slab", "spruce_slab"],     "weights": [0.9, 0.1]},
+            "edge":  "oak_fence"
         }
     },
+
     "SAVANNA": {
         "structure": {
             "primary_wall": {"variants": ["orange_terracotta", "yellow_terracotta", "coarse_dirt"], "weights": [0.5, 0.3, 0.2]},
@@ -189,16 +208,19 @@ MATERIAL_LIBRARY = {
             }
         },
         "districts": {
-            "fishing": {"dock": ["acacia_slab"], "barrel": ["barrel"]},
-            "blacksmith": {"hearth": ["blast_furnace"], "floor": ["terracotta_tiles"]},
-            "centre": {"plaza": ["polished_terracotta"], "monument": ["cut_terracotta"]}
+            "fishing":    {"dock": ["acacia_slab"],             "barrel": ["barrel"]},
+            # FIX: terracotta_tiles -> terracotta
+            "blacksmith": {"hearth": ["blast_furnace"],         "floor": ["terracotta"]},
+            # FIX: polished_terracotta -> orange_terracotta, cut_terracotta -> yellow_terracotta
+            "centre":     {"plaza": ["orange_terracotta"],      "monument": ["yellow_terracotta"]}
         },
         "roads": {
-            "main": {"variants": ["stone_bricks", "cobblestone"], "weights": [0.8, 0.2]},
-            "path": {"variants": ["coarse_dirt", "dirt_path"], "weights": [0.6, 0.4]},
-            "edge": "acacia_slab"
+            "main":  {"variants": ["stone_bricks", "cobblestone"], "weights": [0.8, 0.2]},
+            "path":  {"variants": ["coarse_dirt", "dirt_path"],    "weights": [0.6, 0.4]},
+            "edge":  "acacia_slab"
         }
     },
+
     "BADLANDS": {
         "structure": {
             "primary_wall": {"variants": ["red_sandstone", "terracotta", "brown_terracotta"], "weights": [0.4, 0.4, 0.2]},
@@ -218,14 +240,41 @@ MATERIAL_LIBRARY = {
             }
         },
         "districts": {
-            "fishing": {"dock": ["dark_oak_slab"], "barrel": ["barrel"]},
-            "blacksmith": {"hearth": ["blast_furnace"], "floor": ["red_nether_bricks"]},
-            "centre": {"plaza": ["smooth_red_sandstone"], "monument": ["gold_block"]}
+            "fishing":    {"dock": ["dark_oak_slab"],               "barrel": ["barrel"]},
+            "blacksmith": {"hearth": ["blast_furnace"],             "floor": ["red_nether_bricks"]},
+            # FIX: sandstone_tiles -> smooth_red_sandstone (centre already had smooth_red_sandstone for plaza)
+            "centre":     {"plaza": ["smooth_red_sandstone"],       "monument": ["gold_block"]}
         },
         "roads": {
-            "main": {"variants": ["red_sandstone", "polished_granite"], "weights": [0.6, 0.4]},
-            "path": {"variants": ["red_terracotta", "coarse_dirt"], "weights": [0.7, 0.3]},
-            "edge": "red_sandstone_slab"
+            "main":  {"variants": ["red_sandstone", "polished_granite"], "weights": [0.6, 0.4]},
+            "path":  {"variants": ["red_terracotta", "coarse_dirt"],     "weights": [0.7, 0.3]},
+            "edge":  "red_sandstone_slab"
         }
-    }
+    },
+
+    # FIX: Added missing archetype — _resolve_archetype returns "CHERRY_GROVE"
+    # but the key was absent, causing a KeyError at runtime.
+    "CHERRY_GROVE": {
+        "structure": {
+            "primary_wall": {"variants": ["pink_terracotta", "calcite", "diorite"], "weights": [0.5, 0.3, 0.2]},
+            "foundation": "stone_bricks",
+            "accent": ["cherry_log", "stripped_cherry_log"],
+            "roof": {"block": "cherry_planks", "stairs": "cherry_stairs", "slab": "cherry_slab"},
+            "decor": {
+                "chimney": ["calcite", "diorite"],
+                "light": ["lantern"],
+                "window": ["pink_stained_glass"]
+            }
+        },
+        "districts": {
+            "fishing":    {"dock": ["cherry_slab"],             "barrel": ["barrel"]},
+            "blacksmith": {"hearth": ["blast_furnace"],         "floor": ["stone_bricks"]},
+            "centre":     {"plaza": ["calcite"],                "monument": ["cherry_log"]}
+        },
+        "roads": {
+            "main":  {"variants": ["stone_bricks", "cobblestone"], "weights": [0.7, 0.3]},
+            "path":  {"variants": ["dirt_path", "gravel"],         "weights": [0.8, 0.2]},
+            "edge":  "cherry_slab"
+        }
+    },
 }
