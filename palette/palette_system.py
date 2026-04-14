@@ -310,27 +310,3 @@ class PaletteSystem:
 def palette_get(palette: dict, key: str,default: str = "minecraft:stone") -> str:
     """Safe get for palette with default fallback."""
     return palette.get(key, default)
-
-def test_archetype_resolution():
-    ps = PaletteSystem()
-    
-    # Test cases representing what analysis.surface_blocks might return
-    test_scenarios = [
-        ("Sand in Desert", "minecraft:sand", "ARID"),
-        ("Sand on Beach", "minecraft:beach", "AQUATIC"),
-        ("Snow in Taiga", "minecraft:snow_block", "FROZEN"),
-        ("Mud in Swamp", "minecraft:mud", "LUSH"),
-        ("Jungle Log", "minecraft:jungle_log", "LUSH"),
-        ("The Problem Case", "minecraft:grass_block", "LUSH"), # This usually fails
-    ]
-
-    print(f"{'INPUT BLOCK':<25} | {'EXPECTED':<12} | {'RESULT':<12} | {'STATUS'}")
-    print("-" * 70)
-
-    for description, block, expected in test_scenarios:
-        actual = ps._resolve_archetype(block)
-        status = "✅ PASS" if actual == expected else "❌ FAIL (Got " + actual + ")"
-        print(f"{block:<25} | {expected:<12} | {actual:<12} | {status}")
-
-if __name__ == "__main__":
-    test_archetype_resolution()
