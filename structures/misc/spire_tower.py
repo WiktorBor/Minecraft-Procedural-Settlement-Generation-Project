@@ -80,17 +80,16 @@ class SpireTower:
         # ----------------------------------------------------------------
         # Materials
         # ----------------------------------------------------------------
-        stone   = palette_get(palette, "foundation", "minecraft:stone_bricks")
-        plank   = palette_get(palette, "wall",       "minecraft:dark_oak_planks")
+        # plank   = palette_get(palette, "wall",       "minecraft:dark_oak_planks")
         door_id = palette_get(palette, "door",       "minecraft:spruce_door")
 
         # Stone palette for the tower base — overrides wall/floor to stone bricks
         stone_pal = dict(palette)
-        stone_pal["wall"]           = stone
-        stone_pal["floor"]          = stone
-        stone_pal["foundation"]     = stone
-        stone_pal["ceiling_slab"]   = "minecraft:stone_brick_slab"
-        stone_pal["accent_beam"]    = "minecraft:stripped_dark_oak_log"
+        stone_pal["wall"]           = palette.get("wall")
+        stone_pal["floor"]          = palette_get(palette, "floor", "minecraft:stone_bricks")
+        stone_pal["foundation"]     = palette_get(palette, "foundation", "minecraft:stone_bricks")
+        stone_pal["ceiling_slab"]   = palette.get("roof_slab", "minecraft:stone_brick_slab")
+        stone_pal["accent_beam"]    = palette.get("accent_beam", "minecraft:stripped_spruce_beam")
         stone_pal["interior_light"] = "minecraft:lantern"
 
         # Both contexts share the same buffer + origin + size so rotation pivots match
@@ -155,7 +154,7 @@ class SpireTower:
             # --- Belfry platform (solid dark-oak planks) ---
             for dx in range(tw):
                 for dz in range(td):
-                    ctx_stone.place_block((x + dx, belfry_top, z + dz), Block(plank))
+                    ctx_stone.place_block((x + dx, belfry_top, z + dz), Block(stone_pal["wall"]))
 
             # --- Steep spire ---
             _build_steep_spire(ctx_stone, x, spire_y, z, tw, td)
@@ -167,7 +166,7 @@ class SpireTower:
                 ctx_stone.place_block((x + tw,     y + 1, pass_z), Block("minecraft:air"))
                 ctx_stone.place_block((x + tw,     y + 2, pass_z), Block("minecraft:air"))
                 # Step on house-wing side
-                ctx_stone.place_block((x + tw + 1, y,     pass_z), Block(stone))
+                ctx_stone.place_block((x + tw + 1, y,     pass_z), Block(stone_pal["foundation"]))
                 # Door on tower east wall
                 ctx_stone.place_block(
                     (x + tw - 1, y + 1, pass_z),
@@ -231,8 +230,8 @@ def _build_steep_spire(
     a 1-block eave overhang.  Finishes with a stone-brick cap, iron bars, and
     a lightning rod.
     """
-    mat_stair = ctx.palette.get("roof",       "minecraft:dark_oak_stairs")
-    mat_full  = palette_get(ctx.palette, "roof_block", "minecraft:dark_oak_planks")
+    mat_stair = mat_stair = palette_get(ctx.palette, "roof_stairs", "minecraft:stone_brick_stairs")
+    mat_full  = palette_get(ctx.palette, "roof_block", "minecraft:spruce_planks")
 
     x0, x1 = x - 1, x + w      # start 1 block outside footprint (eave)
     z0, z1 = z - 1, z + d
