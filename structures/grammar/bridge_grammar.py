@@ -87,11 +87,11 @@ def rule_connector_wing_bridge(ctx: BuildContext, x, y, z, length, width, span_a
             
         # Modular: Use the specific face builder from belfry_grammar
         _build_belfry_face(
-            ctx, roof_y - 1, roof_y - 2, 
+            ctx, roof_y - 1, roof_y - 2,
             along=along_coords,
             plank_mat=plank_mat, stair_mat=stair_mat, trap_mat=trap_mat,
-            stair_left ={"facing": "north" if is_x else "west", "half": "top"},
-            stair_right={"facing": "south" if is_x else "east", "half": "top"}
+            stair_left ={"facing": "south" if is_x else "east", "half": "top"},
+            stair_right={"facing": "north" if is_x else "west", "half": "top"}
         )
 
     # 4. Enclosed Ceiling

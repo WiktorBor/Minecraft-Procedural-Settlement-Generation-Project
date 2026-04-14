@@ -60,7 +60,7 @@ def build_fortification_settlement(
     ]
 
     for sx, sz, length, horizontal, offset in wall_sides:
-        clear_fortification_path(ctx, sx, sz, length, horizontal, tower_width, wall_top_y, heightmap, area)
+        clear_fortification_path(ctx, sx, sz, length, horizontal, offset, wall_top_y, heightmap, area)
 
     for sx, sz, length, horizontal, offset in wall_sides:
         dx, dz = offset
@@ -90,7 +90,7 @@ def build_fortification_settlement(
     
     return ctx.buffer
 
-def clear_fortification_path(ctx, sx, sz, length, horizontal, tower_width, wall_top_y, heightmap, area):
+def clear_fortification_path(ctx, sx, sz, length, horizontal, offset, wall_top_y, heightmap, area):
     """
     Clears ONLY the rectangular footprint of the fortification segment.
     """
@@ -109,11 +109,12 @@ def clear_fortification_path(ctx, sx, sz, length, horizontal, tower_width, wall_
 
         # 2. Clear ONLY the tower_width footprint
         # range(0, tower_width) ensures we don't bleed into the settlement
-        for offset in range(tower_width):
+        start, end = offset
+        for i in range(start, end):
             for y in range(gy, wall_top_y + clearance_height):
                 if horizontal:
                     # Clearing along the Z-axis thickness
-                    ctx.place_block((curr_x, y, sz + offset), air)
+                    ctx.place_block((curr_x, y, sz + i), air)
                 else:
                     # Clearing along the X-axis thickness
-                    ctx.place_block((sx + offset, y, curr_z), air)
+                    ctx.place_block((sx + i, y, curr_z), air)
