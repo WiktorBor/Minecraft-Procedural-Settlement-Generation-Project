@@ -21,7 +21,7 @@ def build_roof(
         connector_side: If this part connects to another (e.g., 'west' for the bridge side)
     """
     # 1. SELECT STYLE BASED ON ROLE
-    if structure_role == "tower":
+    if structure_role == "fortification":
         style = "pyramid"
         arm_side = None
     elif structure_role == "spire":

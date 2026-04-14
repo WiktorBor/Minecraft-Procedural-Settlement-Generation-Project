@@ -83,14 +83,18 @@ def rotate_buffer(
     if steps == 0:
         return buf
 
-    box       = Box(offset=(ox, 0, oz), size=(w, 1, d))
+    # Use a local-origin box so transform.apply() works in local space,
+    # then translate back to world coordinates. Using Box(offset=(ox,0,oz))
+    # causes the transform to treat the world offset as part of the rotation
+    # math, producing positions hundreds of blocks from the intended location.
+    box       = Box(offset=(0, 0, 0), size=(w, 1, d))
     transform = rotatedBoxTransform(box, steps)
 
     rotated = BlockBuffer()
     for (x, y, z), block in buf.items():
-        new_pos = transform.apply((x, y, z))
+        local = transform.apply((x - ox, y, z - oz))
         rotated.place(
-            int(new_pos[0]), int(new_pos[1]), int(new_pos[2]),
+            int(local[0]) + ox, int(local[1]), int(local[2]) + oz,
             block.transformed(transform.rotation, transform.flip),
         )
 

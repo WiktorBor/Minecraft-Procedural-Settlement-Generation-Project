@@ -2,6 +2,7 @@ from __future__ import annotations
 import logging
 import random
 from typing import Callable
+from dataclasses import replace
 
 from palette.palette_system import PaletteSystem
 from data.settlement_entities import Plot
@@ -16,7 +17,10 @@ def _make_ctx(pal: PaletteSystem) -> tuple[BuildContext, BlockBuffer]:
     return BuildContext(buffer=buf, palette=pal), buf
 
 def _build_registry() -> dict[str, tuple[Callable, int, int]]:
-    
+    """
+    Registry of builder functions. 
+    Note: Orchestrators called here should be cleaned of internal clamping.
+    """
     def cottage(pl, pal):
         from structures.house.house import build_house_settlement
         ctx, buf = _make_ctx(pal)
@@ -90,42 +94,14 @@ def _build_registry() -> dict[str, tuple[Callable, int, int]]:
         "decoration":   (decoration,   4,  4)
     }
 
-
-# ---------------------------------------------------------------------------
-# District pools
-# ---------------------------------------------------------------------------
-
+# District pools configuration remains unchanged
 DISTRICT_POOLS: dict[str, dict[str, float]] = {
-    "residential": {
-        "cottage":      0.35,
-        "spire_tower":  0.15,
-        "blacksmith":   0.20,
-        "clock_tower":  0.12,
-        "tavern":       0.13,
-        "farm":         0.05,
-    },
-    "farming": {
-        "farm":         0.60,
-        "cottage":      0.15,
-        "market":       0.25,
-    },
-    "fishing": {
-        "clock_tower":  0.20,
-        "cottage":      0.50,
-        "market":       0.30,
-    },
-    "forest": {
-        "tavern":       0.30,
-        "spire_tower":  0.35,
-        "cottage":      0.35,
-    },
+    "residential": {"cottage": 0.35, "spire_tower": 0.15, "blacksmith": 0.20, "clock_tower": 0.12, "tavern": 0.13, "farm": 0.05},
+    "farming":     {"farm": 0.60, "cottage": 0.15, "market": 0.25},
+    "fishing":     {"clock_tower": 0.20, "cottage": 0.50, "market": 0.30},
+    "forest":      {"tavern": 0.30, "spire_tower": 0.35, "cottage": 0.35},
 }
-
-FALLBACK_POOL: dict[str, float] = {
-    "cottage":      0.40,
-    "clock_tower":  0.40,
-    "market": 0.20,
-}
+FALLBACK_POOL: dict[str, float] = {"cottage": 0.40, "clock_tower": 0.40, "market": 0.20}
 
 class StructureSelector:
     def __init__(self, analysis, config, palette, has_water=False):
@@ -135,6 +111,7 @@ class StructureSelector:
         self.has_water = has_water
         self._registry = _build_registry()
         
+        # SINGLE SOURCE OF TRUTH for constraints
         self._constraints = {
             "cottage":      (7,  7,  11, 11),
             "spire_tower":  (10, 6,  14, 10),
@@ -142,25 +119,19 @@ class StructureSelector:
             "clock_tower":  (5,  5,  8,  8),
             "tavern":       (13, 8,  19, 12),
             "farm":         (5,  5,  10, 10),
-            "market":        (5,  5,  10, 10),
+            "market":       (5,  5,  10, 10),
             "dock":         (14, 10, 20, 15),
             "tower":        (5,  5,  8,  8),
+            "decoration":   (4,  4,  6,  6)
         }
 
     def select(self, plot: Plot) -> str | None:
-        """
-        Return the template key to build on this plot, or None to skip.
-        """
         dtype = (plot.type or "residential").strip().lower()
-
-        # Fallback for fishing districts without water access
         if dtype == "fishing" and not self.has_water:
             dtype = "residential"
 
-        # Get the pool for this district
         pool = DISTRICT_POOLS.get(dtype, FALLBACK_POOL)
 
-        # 1. Filter the pool to find what actually fits this plot size
         eligible_pool = {}
         for key, weight in pool.items():
             if key in self._constraints:
@@ -169,10 +140,8 @@ class StructureSelector:
                     eligible_pool[key] = weight
 
         if not eligible_pool:
-            logger.debug(f"No building fits plot {plot.width}x{plot.depth} in {dtype}")
             return None
 
-        # 2. Pick a building based on weights and RETURN it
         return self._weighted_choice(eligible_pool)
 
     def _weighted_choice(self, pool: dict[str, float]) -> str:
@@ -181,28 +150,43 @@ class StructureSelector:
         return random.choices(keys, weights=weights, k=1)[0]
 
     def effective_footprint(self, plot: Plot, template_key: str) -> tuple[int, int]:
+        """Calculates exact dimensions. Orchestrators should NOT re-calculate these."""
         if template_key not in self._constraints:
             return plot.width, plot.depth
+            
         min_w, min_d, max_w, max_d = self._constraints[template_key]
+        
+        # 1. Primary Clamp
         ew = max(min_w, min(max_w, plot.width))
         ed = max(min_d, min(max_d, plot.depth))
-        # Clamp to odd numbers for symmetrical roofs
-        return (ew if ew % 2 != 0 else ew - 1), (ed if ed % 2 != 0 else ed - 1)
+        
+        # 2. Force Symmetry (Odd Numbers)
+        if ew % 2 == 0: ew -= 1
+        if ed % 2 == 0: ed -= 1
+        
+        # 3. Final safety check against original plot bounds
+        return max(min_w, ew), max(min_d, ed)
 
     def build(self, plot: Plot, template_key: str) -> BlockBuffer | None:
         entry = self._registry.get(template_key)
         if not entry: return None
         builder, _, _ = entry
-        buf = builder(plot, self.palette)
+
+        # THE SINGLE CLAMP:
+        ew, ed = self.effective_footprint(plot, template_key)
         
+        # Force the orchestrator to build in the effective size, ignoring original plot scale
+        clamped_world_plot = replace(plot, width=ew, depth=ed)
+
+        buf = builder(clamped_world_plot, self.palette)
+
+        if buf is None or len(buf) == 0:
+            logger.warning(f"Builder for {template_key} returned empty buffer")
+            return None
+        
+        # Rotation is applied based on the FIXED effective footprint
         rotation = facing_to_rotation(plot.facing)
         if rotation != 0:
-            w, d = self.effective_footprint(plot, template_key)
-            buf = rotate_buffer(buf, plot.x, plot.z, w, d, rotation)
+            buf = rotate_buffer(buf, plot.x, plot.z, ew, ed, rotation)
+            
         return buf
-
-    def _select_best_fit(self, plot: Plot, pool: dict) -> str | None:
-        eligible = [k for k in pool.keys() if k in self._constraints and 
-                    plot.width >= self._constraints[k][0] and 
-                    plot.depth >= self._constraints[k][1]]
-        if not eligible: return None

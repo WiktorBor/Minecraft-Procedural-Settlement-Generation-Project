@@ -15,7 +15,7 @@ def rule_tavern(ctx: BuildContext, x, y, z, tw, bw, cw, d):
 
     # 1. Modular Bridge (Connector Style)
     # This uses your new symmetrical pillar logic and 3-block interior width
-    bridge_plot = Plot(x=x + tw, y=bridge_y, z=z + t_offset_z, width=bw, depth=tw)
+    bridge_plot = Plot(x=x + tw, y=bridge_y, z=z, width=bw, depth=tw)
     build_bridge(
         ctx, 
         bridge_plot, 
@@ -35,7 +35,7 @@ def rule_tavern(ctx: BuildContext, x, y, z, tw, bw, cw, d):
     # bridge_side="west" tells the house to place the door/opening where the bridge lands
     build_house_settlement(
         ctx, 
-        Plot(x = x + tw + bw, y=y, z=z, width=cw, depth=d),
+        Plot(x = x + tw + bw, y=y, z=z - t_offset_z, width=cw, depth=d),
         bridge_side="west", 
         structure_role="annex",
     )

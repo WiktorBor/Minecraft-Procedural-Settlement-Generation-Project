@@ -40,14 +40,14 @@ class RectangularArea:
         return self.z + self.depth - 1
 
     @property
-    def center_x(self) -> float:
+    def center_x(self) -> int:
         """World X coordinate of the centre of this area."""
-        return self.x + self.width / 2
+        return self.x + (self.width // 2)
 
     @property
-    def center_z(self) -> float:
+    def center_z(self) -> int:
         """World Z coordinate of the centre of this area."""
-        return self.z + self.depth / 2
+        return self.z + (self.depth // 2)
 
 
 # ---------------------------------------------------------------------------
@@ -74,8 +74,8 @@ class Plot(RectangularArea):
         World (x, z) of the cell one block outside the centre of the front edge.
         This is where the connector path should end.
         """
-        cx = int(self.center_x)
-        cz = int(self.center_z)
+        cx = self.center_x
+        cz = self.center_z
         if self.facing == "north":
             return cx, self.z_from - 1
         if self.facing == "south":

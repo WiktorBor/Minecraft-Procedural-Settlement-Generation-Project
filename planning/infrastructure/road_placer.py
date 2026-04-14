@@ -64,7 +64,7 @@ class RoadBuilder:
         Build road and bridge blocks into a BlockBuffer.
         Groups contiguous bridge cells to build them as single orchestrator units.
         """
-        heightmap = self.analysis.heightmap_ocean_floor
+        heightmap = self.analysis.heightmap_ground
         area      = self.analysis.best_area
         buffer    = BlockBuffer()
         all_cells = list(roads)

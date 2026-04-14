@@ -10,10 +10,13 @@ def build_market_stall(ctx: BuildContext, plot: Plot):
     Assembles a detailed market stall centered in the plot.
     """
     # 1. Scaling & Logic
-    # Clamp size so it stays a 'stall' even in a large plot
-    sw = min(plot.width, 7)
-    sd = min(plot.depth, 5)
-    if sw < 3 or sd < 3: return # Too small to build
+    sw = plot.width
+    sd = plot.depth
+
+    # 2.Always return the buffer
+    # If the plot is somehow still too small, return empty
+    if sw < 3 or sd < 3: 
+        return ctx.buffer
     
     # Calculate local origin to center the stall in the plot
     sx = plot.x + (plot.width - sw) // 2

@@ -25,7 +25,7 @@ class SettlementPlanner:
     def __init__(self, config: SettlementConfig) -> None:
         self.config = config
 
-    def plan_districts(self, analysis: WorldAnalysisResult) -> SettlementState:
+    def plan_districts(self, analysis: WorldAnalysisResult, state: SettlementState) -> SettlementState:
         """
         Choose settlement centre and generate Voronoi districts.
 
@@ -33,7 +33,6 @@ class SettlementPlanner:
         Roads and plots are empty — register fountain cells into state.occupancy,
         then call plan_roads(analysis, state).
         """
-        state        = SettlementState(analysis.best_area)
         state.center = self._choose_center(analysis)
         logger.info("Settlement centre: %s", state.center)
 
@@ -87,7 +86,7 @@ class SettlementPlanner:
             config=self.config,
             hub_point=hub,
         )
-        roads = road_planner.generate()
+        roads = road_planner.generate(state)
         state.add_road_cells(roads)
         logger.info("Generated %d road cells.", state.road_cell_count)
 

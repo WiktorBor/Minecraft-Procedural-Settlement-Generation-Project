@@ -411,7 +411,7 @@ class _ArmRC:
     def __init__(self, rx0, rx1, rz0, rz1, ry):
         self.rx0, self.rx1 = rx0, rx1
         self.rz0, self.rz1 = rz0, rz1
-        self.ry = ry
+        self.ry = ry if ry % 2 == 1 else ry - 1 
 
     @property
     def rw(self): return self.rx1 - self.rx0

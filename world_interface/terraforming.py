@@ -897,6 +897,8 @@ def level_plot_area(editor: Editor, analysis: any, plot: Plot, blend_radius: int
     hm = analysis.heightmap_ground.astype(np.float32)
     rows, cols = hm.shape
 
+    clear_area(editor, analysis, plot, TerrainConfig(), buffer=blend_radius)
+
     # Convert plot world coords → local array indices, clamped to array bounds
     ix0 = int(np.clip(plot.x - area.x_from, 0, rows))
     ix1 = int(np.clip(plot.x - area.x_from + plot.width,  0, rows))

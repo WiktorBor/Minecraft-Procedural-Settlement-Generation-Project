@@ -26,12 +26,12 @@ def build_door(
     
     # 3. Place the door on the chosen available wall
     if door_side == "north":
-        rule_door(ctx, mid_x, y, z, style, facing="south")
+        rule_door(ctx, mid_x, y, z, style, facing="north")
     elif door_side == "south":
-        rule_door(ctx, mid_x, y, z + d - 1, style, facing="north")
+        rule_door(ctx, mid_x, y, z + d - 1, style, facing="south")
     elif door_side == "west":
-        rule_door(ctx, x, y, mid_z, style, facing="east")
+        rule_door(ctx, x, y, mid_z, style, facing="west")
     elif door_side == "east":
-        rule_door(ctx, x + w - 1, y, mid_z, style, facing="west")
+        rule_door(ctx, x + w - 1, y, mid_z, style, facing="east")
     
     return door_side

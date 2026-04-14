@@ -23,7 +23,7 @@ from structures.district_structures.district_marker import DistrictMarker
 from world_interface.block_buffer import BlockBuffer
 from planning.infrastructure.road_placer import RoadBuilder
 from world_interface.structure_placer import StructurePlacer
-from world_interface.terraforming import fill_depressions, level_plot_area, recompute_all_maps
+from world_interface.terraforming import level_plot_area
 
 logger = logging.getLogger(__name__)
 
@@ -50,19 +50,27 @@ class SettlementGenerator:
 
     def generate(self) -> SettlementState:
         """Run the full settlement generation pipeline."""
-        logger.info("=" * 50)
-        logger.info("SETTLEMENT GENERATOR")
-        logger.info("=" * 50)
-
-        # --- Phase 1: World analysis + terrain fill ---
         logger.info("[Phase 1] Analysing world...")
         analysis = self.analyser.prepare()
-        logger.info("  ✓ World analysis complete. Best area: %s", analysis.best_area)
+        
+        # 1. Create the state object early
+        state = SettlementState()
 
-        # --- Phase 2: District planning + palettes ---
-        logger.info("[Phase 2] District planning...")
-        state = self.planner.plan_districts(analysis)
+        # 2. Find the optimal center from the analysis scores
+        local_i, local_j = np.unravel_index(
+            np.argmax(analysis.scores), 
+            analysis.scores.shape
+        )
+        world_x, world_z = analysis.best_area.index_to_world(local_i, local_j)
+        state.center = (world_x, world_z)
+
+        # 3. Synchronize the OccupancyMap with the Best Area
         state.init_occupancy(analysis.best_area)
+
+        # --- Phase 2: District planning ---
+        logger.info("[Phase 2] District planning...")
+        # Update your planner call to use the now-initialized state
+        self.planner.plan_districts(analysis, state)
         logger.info("  ✓ %d districts ready.", len(state.districts.district_list))
 
         district_palettes = PaletteSystem().generate(analysis, state.districts)
@@ -95,8 +103,6 @@ class SettlementGenerator:
                 width=plaza_side, depth=plaza_side, y=cy,
                 type="plaza"
             )
-
-            level_plot_area(self.editor, analysis, plaza_plot)
             from structures.orchestrators.plaza import build_square_centre
             build_square_centre(self.ctx, plaza_plot)
 
@@ -124,17 +130,15 @@ class SettlementGenerator:
         # --- Phase 3b: District markers (fountains / wells / docks) ---
         logger.info("[Phase 3b] Placing district markers...")
         
-        # FIX: Pass self.ctx instead of palette
         district_marker = DistrictMarker(
             analysis=analysis,
             ctx=self.ctx,
         )
-        # build() now writes to master_buffer via ctx and returns ONLY taken cells
         fountain_cells = district_marker.build(state.districts)
         state.add_taken(fountain_cells)
         logger.info("  ✓ District markers placed (%d cells).", len(fountain_cells))
 
-        # --- Phase 3d: Road planning + placement ---
+        # --- Phase 3d: Road planning ---
         logger.info("[Phase 3d] Planning roads...")
         self.planner.plan_roads(analysis, state)
         road_builder = RoadBuilder(
@@ -201,33 +205,31 @@ class SettlementGenerator:
                 )
                 continue
 
-            max_w = self.settlement_config.max_plot_width
-            max_d = self.settlement_config.max_plot_depth
-            if plot.width > max_w or plot.depth > max_d:
-                plot.width = min(plot.width, max_w)
-                plot.depth = min(plot.depth, max_d)
-                logger.debug(
-                    "  Plot %d/%d clamped to %dx%d.",
-                    idx, len(state.plots), plot.width, plot.depth,
-                )
-
-            logger.info(
-                "  Building %d/%d: %s at (%d, %d).",
-                idx, len(state.plots), template_key, plot.x, plot.z,
-            )
-
             struct_w, struct_d = selector.effective_footprint(plot, template_key)
-            if struct_w < plot.width or struct_d < plot.depth:
-                level_target = replace(plot, width=struct_w, depth=struct_d)
-                level_plot_area(self.editor, analysis, level_target)
-                plot.y = level_target.y
-            else:
-                level_plot_area(self.editor, analysis, plot)
+            level_target = replace(plot, width=struct_w, depth=struct_d)
+            level_plot_area(self.editor, analysis, level_target)
+            plot.y = level_target.y
             
             self.editor.flushBuffer()
 
             # Pass context to selectors where refactored, otherwise merge results
             buf = selector.build(plot, template_key)
+            if buf is None:
+                logger.warning(
+                    "  [FAILURE] Plot %d/%d: Selector returned NONE for '%s' at (%d, %d).",
+                    idx, len(state.plots), template_key, plot.x, plot.z
+                )
+            elif len(buf) == 0:
+                logger.warning(
+                    "  [EMPTY] Plot %d/%d: Buffer for '%s' is empty. Check structure constraints.",
+                    idx, len(state.plots), template_key
+                )
+            else:
+                logger.info(
+                    "  [SUCCESS] Plot %d/%d: Generated '%s' with %d blocks. /tp %d %d %d",
+                    idx, len(state.plots), template_key, len(buf), plot.x, plot.y, plot.z
+                )
+    
             if buf is not None and len(buf) > 0:
                 master_buffer.merge(buf)
 
@@ -253,7 +255,7 @@ class SettlementGenerator:
         logger.info("[Phase 6] Building fortification...")
         from structures.orchestrators.fortification import build_fortification_settlement
         # Reuse existing master context
-        wall_top_y = int(np.max(analysis.heightmap_ground)) + 10
+        wall_top_y = int(np.max(analysis.heightmap_ground))
         build_fortification_settlement(
             self.ctx, default_palette,
             analysis.heightmap_ground, analysis.best_area,
@@ -401,10 +403,9 @@ class SettlementGenerator:
 
             # Expand to 2-wide with organic edges so it looks like a
             # worn footpath rather than a single-pixel line.
-            bounds = analysis.best_area
             expanded = expand_path_to_width(
-                centerline, 2, bounds,
-                blocked=set(),
+                centerline, 2, analysis.best_area,
+                blocked=tuple(),
                 organic=True,
             )
 

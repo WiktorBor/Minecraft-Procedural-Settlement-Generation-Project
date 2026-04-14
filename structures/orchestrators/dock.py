@@ -7,9 +7,10 @@ def build_dock(ctx: BuildContext, plot: Plot):
     w, d = plot.width, plot.depth
 
     # 1. Spatial Partitioning
-    main_d = max(3, (d * 3) // 5)
+    main_d = (d * 3) // 5
     pier_d = d - main_d
-    pier_w = max(3, w // 3)
+    pier_w = w // 3
+    if pier_w % 2 == 0: pier_w -= 1 
     pier_x = x + (w - pier_w) // 2
 
     # 2. Build Main Deck

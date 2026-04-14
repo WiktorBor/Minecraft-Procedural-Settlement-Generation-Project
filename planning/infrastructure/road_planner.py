@@ -1,3 +1,6 @@
+"""
+RoadPlanner — generates main roads connecting district centres using MST + A*.
+"""
 from __future__ import annotations
 
 import logging
@@ -7,11 +10,11 @@ import numpy as np
 from data.analysis_results import WorldAnalysisResult
 from data.configurations import SettlementConfig
 from data.settlement_entities import Districts, RoadCell
+from data.settlement_state import SettlementState
 from utils.astar import find_path
 from utils.mst import mst_edges
 from utils.path_utils import expand_path_to_width
 from utils.walkable_grid import build_cost_grid, nearest_walkable
-from utils.geometry import HasBounds
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +28,7 @@ class RoadPlanner:
     1. Compute district centre points in world coordinates.
     2. Build a Minimum Spanning Tree over those points.
     3. Run A* along each MST edge on the cost-weighted heightmap.
-    4. Expand the centre-line cells to full road width.
+    4. Expand the centre-line cells to full road width while avoiding taken areas.
     """
 
     def __init__(
@@ -40,7 +43,7 @@ class RoadPlanner:
         self.config     = config if config is not None else SettlementConfig()
         self.hub_point  = hub_point  # plaza centre — prepended to MST nodes
 
-    def generate(self) -> list[RoadCell]:
+    def generate(self, state: SettlementState) -> list[RoadCell]:
         """
         Generate roads connecting district centres.
 
@@ -48,8 +51,6 @@ class RoadPlanner:
         -------
         list[RoadCell]
             Road cells in world coordinates representing the full road network.
-            Returns an empty list if no districts are available or no paths
-            could be found.
         """
         if not self.districts.district_list:
             logger.warning(
@@ -61,12 +62,20 @@ class RoadPlanner:
         heightmap  = self.analysis.heightmap_ground
         road_width = self.config.road_width
 
-        costs         = build_cost_grid(self.analysis.water_mask)
+        # 1. Start with water costs
+        costs = build_cost_grid(self.analysis.water_mask)
+        
+        # 2. Block 'occupancy' cells (District Markers / Plaza) in the A* cost grid
+        for wx, wz in state.occupancy:
+            try:
+                li, lj = area.world_to_index(wx, wz)
+                costs[li, lj] = np.inf  # Force A* to path around markers
+            except ValueError:
+                continue
+
         passable_mask = costs < np.inf
 
-        # 1. District centre points in world coordinates.
-        #    If a plaza hub is provided, prepend it so the MST connects every
-        #    district to the plaza first (radial spoke pattern).
+        # 3. Connection points (Plaza + Districts)
         connection_points = [
             (d.center_x, d.center_z)
             for d in self.districts.district_list
@@ -74,10 +83,10 @@ class RoadPlanner:
         if self.hub_point is not None:
             connection_points = [self.hub_point] + connection_points
 
-        # 2. MST over district centres
+        # 4. MST over district centres
         edges = mst_edges(connection_points)
 
-        # 3. A* path for each MST edge
+        # 5. A* path for each MST edge
         centerline: set[tuple[int, int]] = set()
 
         for u, v in edges:
@@ -92,15 +101,8 @@ class RoadPlanner:
                 start = area.world_to_index(sx, sz)
                 goal  = area.world_to_index(gx, gz)
             except ValueError:
-                logger.warning(
-                    "District centre (%s, %s) → (%s, %s) is outside the "
-                    "build area — skipping edge.",
-                    sx, sz, gx, gz,
-                )
                 continue
 
-            # Snap start/goal to nearest non-water cell so A* isn't trapped
-            # when a district centre sits on a water tile.
             start = nearest_walkable(*start, passable_mask, max_radius=15) or start
             goal  = nearest_walkable(*goal,  passable_mask, max_radius=15) or goal
 
@@ -112,11 +114,6 @@ class RoadPlanner:
             )
 
             if path is None:
-                logger.warning(
-                    "No path found between district centres (%s, %s) "
-                    "and (%s, %s).",
-                    sx, sz, gx, gz,
-                )
                 continue
 
             for li, lj in path:
@@ -124,13 +121,15 @@ class RoadPlanner:
                 centerline.add((wx, wz))
 
         if not centerline:
-            logger.warning(
-                "No road cells generated — all paths failed or no edges in MST."
-            )
             return []
 
+        # 6. Expand path while respecting 'state.occupancy' as blocked boundaries
         expanded = expand_path_to_width(
-            centerline, road_width, self.analysis.best_area, blocked=set(), organic=True
+            centerline, 
+            road_width, 
+            self.analysis.best_area, 
+            blocked=state.occupancy,  # Prevent expansion into markers
+            organic=True
         )
 
         final_roads = [
@@ -139,9 +138,8 @@ class RoadPlanner:
         ]
 
         logger.info(
-            "Generated %d road cells (including %d bridges).",
-            len(final_roads),
-            sum(1 for r in final_roads if r.type == "bridge"),
+            "Generated %d road cells (avoiding %d occupancy cells).",
+            len(final_roads), len(state.occupancy)
         )
         return final_roads
 

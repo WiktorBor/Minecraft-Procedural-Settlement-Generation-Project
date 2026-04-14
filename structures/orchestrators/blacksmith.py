@@ -27,7 +27,7 @@ def build_blacksmith(ctx: BuildContext, plot: Plot):
 
     # 3. Build the Forge Work Area (Custom Grammar)
     # The forge is simpler than a house, so we use a specific grammar rule
-    forge_d = max(3, plot.depth // 3)
+    forge_d = (plot.depth * 4) // 10
     rule_forge_work_area(ctx, right_x, plot.y, plot.z, right_w, plot.depth, 5, forge_d)
 
     # 4. Build the Chimney

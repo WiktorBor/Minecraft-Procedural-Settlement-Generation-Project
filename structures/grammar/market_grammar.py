@@ -37,8 +37,3 @@ def rule_market_canopy(ctx: BuildContext, x: int, y: int, z: int, w: int, d: int
             # Slope: Back (z=d-1) is height h+1, Front (z=0) is height h
             dy = h + 1 if dz >= (d // 2) else h
             ctx.place_block((x + dx, y + dy, z + dz), Block(mat))
-            
-            # Front overhang "flap" using carpet
-            if dz == 0:
-                carpet = mat.replace("_wool", "_carpet")
-                ctx.place_block((x + dx, y + dy, z - 1), Block(carpet))
