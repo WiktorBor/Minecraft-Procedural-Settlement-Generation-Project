@@ -152,8 +152,8 @@ def _build_pyramid(
     Starts 1 block outside the wall footprint (eave overhang) and
     converges to a slab peak.
     """
-    mat_stair = ctx.palette.get("roof", "minecraft:dark_oak_stairs")
-    mat_slab  = palette_get(ctx.palette, "roof_slab", "minecraft:dark_oak_slab")
+    mat_stair = palette_get(ctx.palette, "roof_stairs", "minecraft:stone_brick_stairs")
+    mat_slab  = palette_get(ctx.palette, "roof_slab",   "minecraft:stone_brick_slab")
 
     x0, x1    = x - 1, x + w
     z0, z1    = z - 1, z + d
@@ -195,8 +195,8 @@ def build_gabled_roof(ctx: BuildContext, rc: _RoofCorners) -> None:
     span, and so any structure can build a gabled roof without knowing the
     internal geometry.
     """
-    mat_roof  = ctx.palette.get("roof", "minecraft:dark_oak_stairs")
-    mat_slab  = palette_get(ctx.palette, "roof_slab", "minecraft:dark_oak_slab")
+    mat_roof  = palette_get(ctx.palette, "roof_stairs", "minecraft:spruce_oak_stairs")
+    mat_slab  = palette_get(ctx.palette, "roof_slab", "minecraft:spruce_oak_slab")
     peak      = rc.span // 2
 
     for layer in range(peak):
@@ -360,8 +360,8 @@ def _build_cross_arm(
     peak: int,
     side: str,
 ) -> None:
-    mat_roof  = ctx.palette.get("roof", "minecraft:dark_oak_stairs")
-    mat_slab  = palette_get(ctx.palette, "roof_slab", "minecraft:dark_oak_slab")
+    mat_roof  = palette_get(ctx.palette, "roof_stairs", "minecraft:spruce_oak_stairs")
+    mat_slab  = palette_get(ctx.palette, "roof_slab",   "minecraft:stone_brick_slab")
 
     if peak < 2:
         return
