@@ -1,8 +1,4 @@
-"""
-test_house_refactored.py
-------------------------
-Refactored house placement tester.
-"""
+"""test_house.py — standalone house placement tester."""
 from __future__ import annotations
 
 import logging
@@ -45,7 +41,7 @@ ROTATION: int = 0
 # The orchestrator uses these to override the Grammar's default logic
 FORCE_PARAMS: dict | None = {
     "wall_h": 7,
-    "structure_role": "cottage", # or "cottage" to test the refactored cottage logic
+    "structure_role": "cottage",
     "bridge_side": "north"     # Direction for door/roof alignment
 }
 
@@ -94,12 +90,10 @@ def main() -> None:
         clear_box(editor, hx - 2, hy, hz - 2, PLOT_WIDTH, PLOT_DEPTH)
         editor.flushBuffer()
 
-    # 3. Setup the Refactored Build Context
-    # In the new system, we create the buffer and context manually for the orchestrator
     buffer = BlockBuffer()
     ctx = BuildContext(buffer, palette)
 
-    logger.info(f"Building Refactored House at ({hx}, {hy}, {hz})...")
+    logger.info("Building house at (%d, %d, %d)...", hx, hy, hz)
 
     # 4. Call the Orchestrator
     # We pass the bridge_side and structure_role from our Tweak Zone

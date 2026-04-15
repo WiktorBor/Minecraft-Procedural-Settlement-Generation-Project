@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import logging
-import math
-import random
 from dataclasses import replace
 
 import numpy as np
@@ -69,16 +67,13 @@ class SettlementGenerator:
 
         # --- Phase 2: District planning ---
         logger.info("[Phase 2] District planning...")
-        # Update your planner call to use the now-initialized state
         self.planner.plan_districts(analysis, state)
-        logger.info("  ✓ %d districts ready.", len(state.districts.district_list))
+        logger.info("  %d districts, palettes generated.", len(state.districts.district_list))
 
         district_palettes = PaletteSystem().generate(analysis, state.districts)
         default_palette   = next(iter(district_palettes.values()))
-        logger.info("  ✓ Per-district palettes generated.")
 
         master_buffer = BlockBuffer()
-        # Initialize a shared BuildContext for the master settlement buffer
         self.ctx = BuildContext(buffer=master_buffer, palette=default_palette)
 
         # --- Phase 3: Civic Landmark (Plaza) ---
@@ -188,47 +183,32 @@ class SettlementGenerator:
 
             dtype = state.districts.types.get(district_idx, plot.type or "?")
 
-            logger.info(
-                "  Plot %d/%d: district=%s  size=%dx%d  y=%d  facing=%s",
-                idx, len(state.plots),
-                dtype,
-                plot.width, plot.depth, plot.y, plot.facing,
+            logger.debug(
+                "  Plot %d/%d: %s  %dx%d  y=%d  facing=%s",
+                idx, len(state.plots), dtype, plot.width, plot.depth, plot.y, plot.facing,
             )
 
             selector     = selectors.get(district_idx, _fallback_selector)
             template_key = selector.select(plot)
 
             if template_key is None:
-                logger.warning(
-                    "  No template for plot %d/%d at (%d, %d) — skipping.",
-                    idx, len(state.plots), plot.x, plot.z,
-                )
+                logger.warning("  Plot %d/%d (%d,%d): no template — skipping.", idx, len(state.plots), plot.x, plot.z)
                 continue
 
             struct_w, struct_d = selector.effective_footprint(plot, template_key)
             level_target = replace(plot, width=struct_w, depth=struct_d)
             level_plot_area(self.editor, analysis, level_target)
             plot.y = level_target.y
-            
+
             self.editor.flushBuffer()
 
-            # Pass context to selectors where refactored, otherwise merge results
             buf = selector.build(plot, template_key)
             if buf is None:
-                logger.warning(
-                    "  [FAILURE] Plot %d/%d: Selector returned NONE for '%s' at (%d, %d).",
-                    idx, len(state.plots), template_key, plot.x, plot.z
-                )
+                logger.warning("  Plot %d/%d: '%s' returned None at (%d,%d).", idx, len(state.plots), template_key, plot.x, plot.z)
             elif len(buf) == 0:
-                logger.warning(
-                    "  [EMPTY] Plot %d/%d: Buffer for '%s' is empty. Check structure constraints.",
-                    idx, len(state.plots), template_key
-                )
+                logger.warning("  Plot %d/%d: '%s' empty buffer at (%d,%d).", idx, len(state.plots), template_key, plot.x, plot.z)
             else:
-                logger.info(
-                    "  [SUCCESS] Plot %d/%d: Generated '%s' with %d blocks. /tp %d %d %d",
-                    idx, len(state.plots), template_key, len(buf), plot.x, plot.y, plot.z
-                )
+                logger.info("  [%d/%d] %s  /tp %d %d %d", idx, len(state.plots), template_key, plot.x, plot.y, plot.z)
     
             if buf is not None and len(buf) > 0:
                 master_buffer.merge(buf)
@@ -254,7 +234,6 @@ class SettlementGenerator:
         # --- Phase 6: Fortification ---
         logger.info("[Phase 6] Building fortification...")
         from structures.orchestrators.fortification import build_fortification_settlement
-        # Reuse existing master context
         wall_top_y = int(np.max(analysis.heightmap_ground))
         build_fortification_settlement(
             self.ctx, default_palette,
@@ -414,10 +393,5 @@ class SettlementGenerator:
                     all_connectors.append(RoadCell(wx, wz, type="connector"))
                     already_placed.add((wx, wz))
 
-        logger.info(
-            "_build_connectors: %d connector cells for %d buildings "
-            "(%d already on road, %d no path found).",
-            len(all_connectors), len(state.buildings),
-            already_on_road, no_path_count,
-        )
+        logger.info("Connectors: %d cells, %d buildings, %d on road, %d no path.", len(all_connectors), len(state.buildings), already_on_road, no_path_count)
         return all_connectors

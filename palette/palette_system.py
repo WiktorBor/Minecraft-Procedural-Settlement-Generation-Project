@@ -215,7 +215,6 @@ class PaletteSystem:
                 "minecraft:soul_lantern" if archetype == "FROZEN" else "minecraft:lantern",
             ],
             
-            # Flat structure for backward compatibility
             "wall": f"minecraft:{primary_wall}",
             "foundation": f"minecraft:{lib['structure']['foundation']}",
             "accent": f"minecraft:{accent}",
@@ -379,10 +378,7 @@ _FALLBACK_BIOME = "plains"
 
 
 def get_biome_palette(biome_type: str = _FALLBACK_BIOME, district_id: int = 0) -> dict:
-    """
-    Compatibility wrapper for older code that called get_biome_palette() directly.
-    Delegates to PaletteSystem.create_palette().
-    """
+    """Return a palette for the given biome type."""
     system = PaletteSystem()
     try:
         return system.create_palette(

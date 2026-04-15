@@ -1,9 +1,4 @@
-"""
-test_blacksmith.py
-------------------
-Updated standalone tester for the refactored Blacksmith Orchestrator.
-Uses BuildContext and operates independently of the world heightmap.
-"""
+"""test_blacksmith.py — standalone blacksmith placement tester."""
 from __future__ import annotations
 
 import logging

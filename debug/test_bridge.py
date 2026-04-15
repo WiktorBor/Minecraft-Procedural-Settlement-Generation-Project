@@ -1,9 +1,4 @@
-"""
-test_bridge_refactored.py
--------------------------
-Standalone bridge placement tester.
-Builds both an infrastructure bridge and a tavern-style connector.
-"""
+"""test_bridge.py — standalone bridge placement tester."""
 from __future__ import annotations
 
 import logging

@@ -1,12 +1,21 @@
+import logging
+import random
+from dataclasses import replace
+
 from structures.base.build_context import BuildContext
 from structures.house.house_grammar import rule_house
 from palette.palette_system import PaletteSystem
 from data.settlement_entities import Plot
 from structures.house.house_scorer import HouseScorer, HouseParams
-import random
+from structures.house.house_ngram_scorer import HouseNgramScorer, BlockSequenceRecorder
+
+logger = logging.getLogger(__name__)
 
 # Load the 9-feature model
 SCORER = HouseScorer.load("models/house_scorer.pkl")
+
+# Load the n-gram perplexity model (falls back gracefully if not trained yet)
+NGRAM_SCORER = HouseNgramScorer.load("models/house_ngram.pkl")
 
 def build_house_settlement(
     ctx: BuildContext,
@@ -43,12 +52,31 @@ def build_house_settlement(
             best_score = score
             best_params = params
 
+    # Probe pass: record block sequence to compute perplexity
+    recorder = BlockSequenceRecorder()
+    probe_ctx = replace(ctx, buffer=recorder)
+    rule_house(probe_ctx, plot.x, plot.y, plot.z, best_params.w, best_params.d, params=best_params)
+    sequence = recorder.finish()
+
+    if NGRAM_SCORER.model is not None:
+        perplexity = NGRAM_SCORER.model.perplexity(sequence)
+        ngram_score = NGRAM_SCORER.perplexity_to_score(perplexity)
+        logger.info(
+            "House built at (%d, %d) | rf_score=%.3f | perplexity=%.2f | ngram_score=%.3f",
+            plot.x, plot.z, best_score, perplexity, ngram_score,
+        )
+    else:
+        logger.info(
+            "House built at (%d, %d) | rf_score=%.3f | perplexity=n/a (ngram model not trained)",
+            plot.x, plot.z, best_score,
+        )
+
     # Build the winner directly using the consolidated rule_house
     rule_house(
-        ctx, 
-        plot.x, plot.y, plot.z, 
-        best_params.w, best_params.d, 
-        params=best_params 
+        ctx,
+        plot.x, plot.y, plot.z,
+        best_params.w, best_params.d,
+        params=best_params
     )
 
     return (plot.x, plot.z, plot.x + plot.width - 1, plot.z + plot.depth - 1)

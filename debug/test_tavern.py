@@ -1,8 +1,4 @@
-"""
-test_tavern_refactored.py
--------------------------
-Tester for the refactored Tavern Orchestrator and Grammar.
-"""
+"""test_tavern.py — standalone tavern placement tester."""
 from __future__ import annotations
 
 import logging
@@ -23,7 +19,7 @@ from world_interface.block_buffer import BlockBuffer
 from world_interface.structure_placer import StructurePlacer
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
-logger = logging.getLogger("test_tavern_refactored")
+logger = logging.getLogger("test_tavern")
 
 # =============================================================================
 # ✏️  TWEAK ZONE
@@ -60,21 +56,15 @@ def main():
     px, py, pz = _get_player_pos(editor)
     palette = get_biome_palette(PALETTE_NAME)
 
-    # 1. Define the Tavern Plot
-    # We place it 5 blocks in front of the player
     plot = Plot(x=px + 5, y=py, z=pz, width=PLOT_WIDTH, depth=PLOT_DEPTH)
-    
-    # 2. Setup Build Context
     buffer = BlockBuffer()
     ctx = BuildContext(buffer, palette)
 
-    logger.info(f"Building Refactored Tavern at {plot.x}, {plot.y}, {plot.z}...")
+    logger.info("Building tavern at %d, %d, %d...", plot.x, plot.y, plot.z)
     
-    # 3. Call the Orchestrator
-    # This triggers rule_tavern -> build_tower, build_bridge, rule_house
     build_tavern(ctx, plot)
 
-    # 4. Place the results
+    # Place the results
     if CLEAR_FIRST:
         clear_area(editor, plot.x, plot.y, plot.z, PLOT_WIDTH, PLOT_DEPTH)
     

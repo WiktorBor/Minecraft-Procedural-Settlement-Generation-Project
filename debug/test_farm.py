@@ -1,8 +1,4 @@
-"""
-test_farm_refactored.py
------------------------
-Tester for the refactored Farm Orchestrator and Grammar using player position.
-"""
+"""test_farm.py — standalone farm placement tester."""
 from __future__ import annotations
 
 import logging
@@ -23,7 +19,7 @@ from world_interface.block_buffer import BlockBuffer
 from world_interface.structure_placer import StructurePlacer
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
-logger = logging.getLogger("test_farm_refactored")
+logger = logging.getLogger("test_farm")
 
 # =============================================================================
 # ✏️  TWEAK ZONE
@@ -68,7 +64,7 @@ def main():
     buffer = BlockBuffer()
     ctx = BuildContext(buffer, palette)
 
-    logger.info(f"Building Refactored Farm at {plot.x}, {plot.y}, {plot.z}...")
+    logger.info("Building farm at %d, %d, %d...", plot.x, plot.y, plot.z)
     
     # 3. Call Orchestrator
     # This applies plot shrinkage and calls rule_farm internally
