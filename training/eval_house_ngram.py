@@ -142,31 +142,23 @@ def run(
     dry_run:      bool,
     palette_name: str,
 ) -> None:
-    from dataclasses import replace
     from palette.palette_system import get_biome_palette
     from structures.house.house_ngram_scorer import (
         BlockSequenceRecorder,
         NgramLanguageModel,
         HouseNgramScorer,
     )
-    from structures.house.house_scorer import HouseScorer
-    from structures.house.house_grammar import HouseGrammar
+    from structures.house.house_scorer import HouseParams
+    from structures.house.house_grammar import rule_house
+    from structures.base.build_context import BuildContext
 
-    palette   = get_biome_palette(palette_name)
-    rf_scorer = HouseScorer.load(
-        Path(__file__).parent.parent.parent / "models" / "house_scorer.pkl"
-    )
+    palette = get_biome_palette(palette_name)
 
-    # Split evenly: first half good, second half explicitly bad.
-    # This guarantees structurally distinct sequences so the n-gram model
-    # has meaningful signal to learn from.
     n_good_target = n_houses // 2
     good_seqs: list[list[str]] = []
     bad_seqs:  list[list[str]] = []
 
     logger.info("Running %d grammar builds (dry_run=%s)…", n_houses, dry_run)
-
-    grammar = HouseGrammar(palette, scorer=rf_scorer)
 
     for i in range(n_houses):
         force_bad = (i >= n_good_target)
@@ -174,13 +166,33 @@ def run(
         recorder  = BlockSequenceRecorder()
 
         try:
-            ctx       = grammar._make_context(
-                plot.x, plot.y, plot.z, plot.width, plot.depth,
-                rotation=random.choice([0, 90, 180, 270]),
-                force_bad=force_bad,
-            )
-            probe_ctx = replace(ctx, buffer=recorder)
-            grammar._do_place(probe_ctx)
+            if force_bad:
+                # Bad: disproportionate wall height, no features
+                params = HouseParams(
+                    w=plot.width, d=plot.depth,
+                    wall_h=random.randint(8, 10),
+                    structure_role="house",
+                    roof_type="cross",
+                    has_upper=False,
+                    has_chimney=False,
+                    has_porch=False,
+                )
+            else:
+                # Good: well-proportioned, varied features
+                role   = random.choice(["house", "cottage"])
+                wall_h = random.randint(3, 5) if role == "cottage" else random.randint(4, 7)
+                params = HouseParams(
+                    w=plot.width, d=plot.depth,
+                    wall_h=wall_h,
+                    structure_role=role,
+                    roof_type=random.choice(["gabled", "steep"]),
+                    has_upper=(wall_h > 5),
+                    has_chimney=random.random() > 0.5,
+                    has_porch=random.random() > 0.6,
+                )
+
+            ctx = BuildContext(buffer=recorder, palette=palette)
+            rule_house(ctx, plot.x, plot.y, plot.z, plot.width, plot.depth, params=params)
         except Exception as exc:
             logger.warning("Build %d failed: %s", i, exc)
             continue

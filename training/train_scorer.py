@@ -50,9 +50,10 @@ if __name__ == "__main__":
     # 2. Ensure directories exist
     Path("models").mkdir(exist_ok=True)
 
-    # 3. Train directly on human labels (no heuristic rescoring)
+    # 3. Rescore human labels using heuristic for consistency, then train
     if not Path(INPUT_CSV).exists():
         print(f"Error: Could not find {INPUT_CSV}")
         exit(1)
 
-    HouseScorer.train_and_save(INPUT_CSV, MODEL_PATH)
+    rescore_csv(INPUT_CSV, CLEANED_CSV)
+    HouseScorer.train_and_save(CLEANED_CSV, MODEL_PATH)
