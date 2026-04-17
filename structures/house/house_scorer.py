@@ -128,7 +128,7 @@ class HouseScorer:
     def score(self, params: HouseParams, block_sequence: list[str] | None = None) -> float:
         """
         Calculates a blended score.
-        70% Shape (RandomForest) + 30% Pattern (N-gram).
+        75% Shape (RandomForest) + 25% Pattern (N-gram).
         """
         # 1. Get Shape Score
         shape_score = 0.5
@@ -149,7 +149,7 @@ class HouseScorer:
                 pass
 
         # 3. Blend and Clip
-        final = (shape_score * 0.7) + (pattern_score * 0.3)
+        final = (shape_score * 0.75) + (pattern_score * 0.25)
         return float(np.clip(final, 0.0, 1.0))
 
     def _heuristic_score(self, params: HouseParams) -> float:

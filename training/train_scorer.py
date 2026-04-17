@@ -50,12 +50,9 @@ if __name__ == "__main__":
     # 2. Ensure directories exist
     Path("models").mkdir(exist_ok=True)
 
-    # 3. Rescore the data (Passing BOTH arguments now)
-    if Path(INPUT_CSV).exists():
-        rescore_csv(INPUT_CSV, CLEANED_CSV)
-    else:
+    # 3. Train directly on human labels (no heuristic rescoring)
+    if not Path(INPUT_CSV).exists():
         print(f"Error: Could not find {INPUT_CSV}")
         exit(1)
-    
-    # 4. Train the actual Random Forest 'Brain' using the rescored data
-    HouseScorer.train_and_save(CLEANED_CSV, MODEL_PATH)
+
+    HouseScorer.train_and_save(INPUT_CSV, MODEL_PATH)

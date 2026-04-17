@@ -160,6 +160,11 @@ class RoadBuilder:
 
             buffer.place(cell.x, y, cell.z, block)
 
+            # Stochastically place fence post + lantern on edge cells
+            if not is_connector and road_neighbours <= 1 and rng.random() < 0.18:
+                buffer.place(cell.x, y + 1, cell.z, self._fence)
+                buffer.place(cell.x, y + 2, cell.z, self._light)
+
         return buffer
 
     def _group_bridge_segments(self, bridge_cells: list[RoadCell]) -> list[list[RoadCell]]:

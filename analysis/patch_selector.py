@@ -40,12 +40,7 @@ class PatchSelector:
             If no patch meets the terrain constraints or minimum size.
         """
         cfg = self.config
-
-        # ------------------------------------------------------------------
-        # Pass A/B/C: try progressively relaxed slope+roughness thresholds
-        # so a second run (where previous structures raised roughness slightly)
-        # doesn't fragment the only valid region below min_patch_size.
-        # ------------------------------------------------------------------
+        
         valid_mask = None
         for slope_mult, rough_mult in [(1.0, 1.0), (1.5, 1.5), (1.5, None)]:
             slope_ok = self.slope_map <= cfg.max_slope * slope_mult
