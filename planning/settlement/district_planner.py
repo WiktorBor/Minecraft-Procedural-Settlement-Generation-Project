@@ -186,7 +186,7 @@ class DistrictPlanner:
         min_structures = getattr(self.config, "min_structures_per_district", 3)
         smallest_w     = min(self.config.plot_width.values())
         smallest_d     = min(self.config.plot_depth.values())
-        # ×1 (not ×4): score-biased Poisson disk concentrates seeds in valid
+        # ×1: score-biased Poisson disk concentrates seeds in valid
         # terrain, producing many small good-terrain regions that a strict
         # threshold would discard.  The plot planner's per-cell terrain checks
         # filter out bad spots within each district anyway.

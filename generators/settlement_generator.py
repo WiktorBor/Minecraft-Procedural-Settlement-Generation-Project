@@ -327,7 +327,7 @@ class SettlementGenerator:
                 already_on_road += 1
                 continue
 
-            # Find the nearest road cell to the door (not the building centre).
+            # Find the nearest road cell to the door.
             nearest_rx, nearest_rz = min(
                 state._road_coords,
                 key=lambda r: abs(r[0] - door_wx) + abs(r[1] - door_wz),

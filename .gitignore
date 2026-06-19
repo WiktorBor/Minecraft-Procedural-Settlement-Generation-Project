@@ -24,8 +24,11 @@ old_*.py
 
 START_HERE.md
 TEAM_ASSIGNMENTS.md
-README.md
 
 
 docs/
 learning/
+
+# Regenerable training artifacts (produced by training/ scripts)
+training/house_labels_rescored.csv
+training/feature_importance.png

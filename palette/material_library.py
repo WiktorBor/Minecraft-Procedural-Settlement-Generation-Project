@@ -1,20 +1,10 @@
-"""Global Material Library for Procedural Building Generation
+"""
+Global Material Library for Procedural Building Generation
 - Supports weighted primary wall selection
 - Fully categorized by Archetype (TEMPERATE, FROZEN, ARID, LUSH, AQUATIC, SAVANNA, BADLANDS, CHERRY_GROVE)
 - Includes district-specific overrides
 - All decor entries are lists to avoid string-slicing bugs
 - Adds road materials per archetype with main/path distinction
-
-FIXES:
-- Added missing CHERRY_GROVE archetype (was referenced in palette_system but absent)
-- Replaced invalid block IDs in district floors:
-    sandstone_tiles      -> chiseled_sandstone
-    deepslate_tiles      -> deepslate_tile_bricks
-    terracotta_tiles     -> terracotta
-    prismarine_tiles     -> prismarine_bricks
-    stone_brick_tiles    -> stone_bricks
-- Replaced invalid centre blocks in SAVANNA (polished_terracotta, cut_terracotta)
-- Replaced invalid centre block in BADLANDS (sandstone_tiles)
 """
 
 MATERIAL_LIBRARY = {
@@ -84,7 +74,6 @@ MATERIAL_LIBRARY = {
         },
         "districts": {
             "fishing":    {"dock": ["spruce_slab"],              "barrel": ["barrel"]},
-            # FIX: deepslate_tiles -> deepslate_tile_bricks
             "blacksmith": {"hearth": ["blast_furnace"],          "floor": ["deepslate_tile_bricks"]},
             "centre":     {"plaza": ["polished_deepslate"],      "monument": ["blue_ice"]}
         },
@@ -116,7 +105,6 @@ MATERIAL_LIBRARY = {
         },
         "districts": {
             "fishing":    {"dock": ["acacia_slab"],             "barrel": ["barrel"]},
-            # FIX: sandstone_tiles -> chiseled_sandstone
             "blacksmith": {"hearth": ["blast_furnace"],         "floor": ["chiseled_sandstone"]},
             "centre":     {"plaza": ["polished_sandstone"],     "monument": ["cut_sandstone"]}
         },
@@ -178,7 +166,6 @@ MATERIAL_LIBRARY = {
         },
         "districts": {
             "fishing":    {"dock": ["spruce_slab"],             "barrel": ["barrel"]},
-            # FIX: prismarine_tiles -> prismarine_bricks
             "blacksmith": {"hearth": ["blast_furnace"],         "floor": ["prismarine_bricks"]},
             "centre":     {"plaza": ["prismarine"],             "monument": ["sea_lantern"]}
         },
@@ -209,9 +196,7 @@ MATERIAL_LIBRARY = {
         },
         "districts": {
             "fishing":    {"dock": ["acacia_slab"],             "barrel": ["barrel"]},
-            # FIX: terracotta_tiles -> terracotta
             "blacksmith": {"hearth": ["blast_furnace"],         "floor": ["terracotta"]},
-            # FIX: polished_terracotta -> orange_terracotta, cut_terracotta -> yellow_terracotta
             "centre":     {"plaza": ["orange_terracotta"],      "monument": ["yellow_terracotta"]}
         },
         "roads": {
@@ -242,7 +227,6 @@ MATERIAL_LIBRARY = {
         "districts": {
             "fishing":    {"dock": ["dark_oak_slab"],               "barrel": ["barrel"]},
             "blacksmith": {"hearth": ["blast_furnace"],             "floor": ["red_nether_bricks"]},
-            # FIX: sandstone_tiles -> smooth_red_sandstone (centre already had smooth_red_sandstone for plaza)
             "centre":     {"plaza": ["smooth_red_sandstone"],       "monument": ["gold_block"]}
         },
         "roads": {
@@ -252,8 +236,6 @@ MATERIAL_LIBRARY = {
         }
     },
 
-    # FIX: Added missing archetype — _resolve_archetype returns "CHERRY_GROVE"
-    # but the key was absent, causing a KeyError at runtime.
     "CHERRY_GROVE": {
         "structure": {
             "primary_wall": {"variants": ["pink_terracotta", "calcite", "diorite"], "weights": [0.5, 0.3, 0.2]},
