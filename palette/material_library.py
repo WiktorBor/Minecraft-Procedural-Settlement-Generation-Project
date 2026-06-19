@@ -1,3 +1,9 @@
+"""Global Material Library for Procedural Building Generation
+- Supports weighted primary wall selection
+- Fully categorized by Archetype (TEMPERATE, FROZEN, ARID, LUSH, AQUATIC)
+- Includes district-specific overrides
+- All decor entries are lists to avoid string-slicing bugs
+-adds road materials per archetype with main/path distinction
 """
 Global Material Library for Procedural Building Generation
 - Supports weighted primary wall selection

@@ -7,6 +7,11 @@ from palette.material_library import MATERIAL_LIBRARY
 import logging
 
 logger = logging.getLogger(__name__)
+"""
+paletteSystem returns materials for buildings and roads based on biome archetype, district theme.
+Handle weighted variennts and anti-clustering district.
+Roads are returned per-archetyper and main/path distinction.
+"""
 
 """
 paletteSystem returns materials for buildings and roads based on biome archetype, district theme.
@@ -26,12 +31,14 @@ class DistrictMemory:
     """Tracks materials used in district for anti-clustering"""
     def __init__(self, district_id: int, history_length: int = 2):
         self.district_id = district_id
-        self.history: deque[str] = deque(maxlen=history_length)
+        self.history = deque(maxlen=history_length)
 
-    def add_building(self, material: str) -> None:
+    def add_building(self, material: str):
+        """Record material usage for anti-clustering check"""
         self.history.append(material)
-
+    
     def is_overused(self, material: str) -> bool:
+        """Check if material appeared too recently"""
         return material in self.history
 
 
@@ -346,6 +353,8 @@ class PaletteSystem:
 
         raise ValueError(f"Unknown road component_type: {component_type!r}")
 
+        raise ValueError(f"Unknown road component: {component_type}")
+    
     def get_road_material(self, biome_name: str, is_main: bool = True) -> str:
         return self.get_road_component(biome_name, is_main, component_type="base")
 
