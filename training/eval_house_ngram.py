@@ -36,7 +36,7 @@ Usage
         [--model-out models/house_ngram.pkl] \
         [--dry-run]
 
-    Pass --dry-run to use NullEditor (no Minecraft connection required).
+    Pass --dry-run to skip saving the model to disk.
 """
 from __future__ import annotations
 
@@ -49,25 +49,6 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# NullEditor — lets the script run without a live Minecraft connection
-# ---------------------------------------------------------------------------
-
-class NullEditor:
-    """
-    Minimal Editor stand-in for dry-run mode.
-
-    Accepts placeBlock calls and discards them. All other attribute access
-    raises AttributeError so real Editor-only code surfaces bugs early.
-    """
-
-    def placeBlock(self, position, block) -> None:
-        pass  # intentionally discard
-
-    def __getattr__(self, name: str):
-        raise AttributeError(
-            f"NullEditor does not support '{name}' — use a real Editor for live builds."
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -161,24 +142,18 @@ def run(
     dry_run:      bool,
     palette_name: str,
 ) -> None:
-    from data.biome_palettes import get_biome_palette
+    from palette.palette_system import get_biome_palette
     from structures.house.house_ngram_scorer import (
         BlockSequenceRecorder,
         NgramLanguageModel,
         HouseNgramScorer,
     )
-    from structures.house.house_scorer import HouseScorer
-    from structures.house.house_grammar import HouseGrammar
+    from structures.house.house_scorer import HouseParams
+    from structures.house.house_grammar import rule_house
+    from structures.base.build_context import BuildContext
 
-    palette   = get_biome_palette(palette_name)
-    rf_scorer = HouseScorer.load(
-        Path(__file__).parent.parent.parent / "models" / "house_scorer.pkl"
-    )
-    editor = NullEditor() if dry_run else _get_live_editor()
+    palette = get_biome_palette(palette_name)
 
-    # Split evenly: first half good, second half explicitly bad.
-    # This guarantees structurally distinct sequences so the n-gram model
-    # has meaningful signal to learn from.
     n_good_target = n_houses // 2
     good_seqs: list[list[str]] = []
     bad_seqs:  list[list[str]] = []
@@ -188,20 +163,38 @@ def run(
     for i in range(n_houses):
         force_bad = (i >= n_good_target)
         plot      = _random_plot()
-        recorder  = BlockSequenceRecorder(editor)
-        grammar   = HouseGrammar(recorder, palette, scorer=rf_scorer)
+        recorder  = BlockSequenceRecorder()
 
         try:
-            ctx    = grammar._make_context(
-                plot,
-                rotation=random.choice([0, 90, 180, 270]),
-                force_bad=force_bad,
-            )
-            params = grammar._ctx_to_params(ctx)
-            grammar._place(ctx)
+            if force_bad:
+                # Bad: disproportionate wall height, no features
+                params = HouseParams(
+                    w=plot.width, d=plot.depth,
+                    wall_h=random.randint(8, 10),
+                    structure_role="house",
+                    roof_type="cross",
+                    has_upper=False,
+                    has_chimney=False,
+                    has_porch=False,
+                )
+            else:
+                # Good: well-proportioned, varied features
+                role   = random.choice(["house", "cottage"])
+                wall_h = random.randint(3, 5) if role == "cottage" else random.randint(4, 7)
+                params = HouseParams(
+                    w=plot.width, d=plot.depth,
+                    wall_h=wall_h,
+                    structure_role=role,
+                    roof_type=random.choice(["gabled", "steep"]),
+                    has_upper=(wall_h > 5),
+                    has_chimney=random.random() > 0.5,
+                    has_porch=random.random() > 0.6,
+                )
+
+            ctx = BuildContext(buffer=recorder, palette=palette)
+            rule_house(ctx, plot.x, plot.y, plot.z, plot.width, plot.depth, params=params)
         except Exception as exc:
             logger.warning("Build %d failed: %s", i, exc)
-            recorder.reset()
             continue
 
         seq = recorder.finish()
@@ -231,13 +224,6 @@ def run(
     scorer = HouseNgramScorer(model=model, blend_weight=blend_weight)
     scorer.save(model_out)
     logger.info("Model saved to %s", model_out)
-
-
-def _get_live_editor():
-    from gdpc.editor import Editor
-    editor = Editor(buffering=True)
-    editor.checkConnection()
-    return editor
 
 
 # ---------------------------------------------------------------------------

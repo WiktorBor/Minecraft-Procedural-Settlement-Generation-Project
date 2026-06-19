@@ -1,67 +1,37 @@
 """
 test_tower.py
 -------------
-Standalone tower placement tester.
-
-Run from the project root while your Minecraft server is running:
-
-    python debug/test_tower.py
-
-Builds a square stone tower (stone base → log belt → open belfry →
-plank platform → steep spire) centred on the plot.
-
-Controls
---------
-- PALETTE_NAME  — biome material set ("medieval", "desert", "snowy", "savanna")
-- OFFSET        — (x, y_offset, z) relative to player position
-- PLOT_WIDTH    — plot width (tower footprint is always 5×5, centred)
-- PLOT_DEPTH    — plot depth
-- ROTATION      — 0 / 90 / 180 / 270
-- CLEAR_FIRST   — wipe the area before building
-- SEED          — fixed int for reproducible results, None for random
+Final modular version. 
+Tests the build_tower orchestrator relative to the player position.
 """
 from __future__ import annotations
 
 import logging
 import sys
-import random
 from pathlib import Path
+from structures.base.build_context import BuildContext
 
+# Ensure the project root is in the path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from gdpc import Editor, Block
-
-from data.biome_palettes import get_biome_palette
+from palette.palette_system import get_biome_palette
 from data.settlement_entities import Plot
-from structures.tower.tower import Tower
+from structures.orchestrators.tower import build_tower  # The new orchestrator
 from world_interface.structure_placer import StructurePlacer
+from world_interface.block_buffer import BlockBuffer
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s]: %(message)s")
 logger = logging.getLogger("test_tower")
 
 # =============================================================================
-# TWEAK ZONE
+# SETTINGS
 # =============================================================================
-
-SEED: int | None = 42
-
-OFFSET: tuple[int, int, int] = (5, 0, 5)
-
-PLOT_WIDTH: int = 10   # tower is 5×5 centred on plot
-PLOT_DEPTH: int = 10
-
 PALETTE_NAME: str = "medieval"
-
+ROTATION: int     = 0
 CLEAR_FIRST: bool = True
-
-ROTATION: int = 0   # 0 / 90 / 180 / 270
-
+OFFSET: tuple     = (5, 0, 5) # 5 blocks away from player
 # =============================================================================
-
 
 def _get_player_pos(editor: Editor) -> tuple[int, int, int]:
     import requests, re
@@ -101,71 +71,41 @@ def _get_player_pos(editor: Editor) -> tuple[int, int, int]:
     logger.warning("Falling back to build area centre.")
     return cx, 64, cz
 
-
-def clear_box(editor: Editor, x: int, y: int, z: int, w: int, d: int, h: int = 35) -> None:
-    positions = [
-        (x + dx, y + dy, z + dz)
-        for dx in range(w + 4)
-        for dz in range(d + 4)
-        for dy in range(-2, h)
-    ]
-    logger.info("Clearing %d blocks...", len(positions))
-    editor.placeBlock(positions, Block("minecraft:air"))
-
-
-def get_ground_y(editor: Editor, x: int, z: int, start_y: int) -> int:
-    for y in range(start_y, start_y - 30, -1):
-        block = editor.getBlock((x, y, z))
-        if block.id not in ("minecraft:air", "minecraft:cave_air", "minecraft:void_air"):
-            return y
-    return start_y
-
-
 def main() -> None:
-    if SEED is not None:
-        random.seed(SEED)
-
-    logger.info("Connecting to Minecraft server...")
     editor = Editor(buffering=True)
-
-    try:
-        editor.checkConnection()
-    except Exception as e:
-        logger.error("Could not connect: %s", e)
-        sys.exit(1)
-
-    logger.info("Connected.")
     px, py, pz = _get_player_pos(editor)
-    logger.info("Player position: (%d, %d, %d)", px, py, pz)
-
-    ox, oy_offset, oz = OFFSET
-    hx = px + ox
-    hz = pz + oz
-    hy = get_ground_y(editor, hx, hz, py + oy_offset)
-    logger.info("Plot origin: (%d, %d, %d)", hx, hy, hz)
-
-    plot = Plot(x=hx, y=hy, z=hz, width=PLOT_WIDTH, depth=PLOT_DEPTH, type="residential")
+    
+    # Calculate build origin
+    hx, hy, hz = px + OFFSET[0], py + OFFSET[1], pz + OFFSET[2]
+    
+    # We use a 10x10 plot so the 5x5 tower has room to breathe
+    plot = Plot(x=hx, y=hy, z=hz, width=10, depth=10, type="residential")
     palette = get_biome_palette(PALETTE_NAME)
 
     if CLEAR_FIRST:
-        clear_box(editor, hx - 2, hy, hz - 2, PLOT_WIDTH, PLOT_DEPTH)
+        # Clear a slightly larger area for visibility
+        editor.placeBlock([(hx + dx, hy + dy, hz + dz) 
+                           for dx in range(12) for dz in range(12) for dy in range(25)], 
+                          Block("minecraft:air"))
         editor.flushBuffer()
-        logger.info("Area cleared.")
 
-    logger.info(
-        "Building tower %dx%d at (%d,%d,%d) rotation=%d palette=%s ...",
-        PLOT_WIDTH, PLOT_DEPTH, hx, hy, hz, ROTATION, PALETTE_NAME,
+    logger.info(f"Testing Tower Orchestrator at ({hx}, {hy}, {hz})")
+
+    # CALLING THE NEW ORCHESTRATOR
+    # We pass the role "tower_house" to test if windows and doors generate
+    ctx = BuildContext(BlockBuffer(), palette)
+
+    buf = build_tower(
+        ctx, 
+        plot, 
+        structure_role="clock_tower"
     )
 
-    buf = Tower().build(None, plot, palette, rotation=ROTATION)
-    if not buf:
-        logger.error("Tower returned an empty buffer.")
-        sys.exit(1)
-
-    logger.info("Buffer contains %d blocks.", len(buf))
-    StructurePlacer(editor).place(buf)
-    logger.info("Done — /tp %d %d %d", hx, hy + 5, hz - 5)
-
+    if buf:
+        StructurePlacer(editor).place(buf)
+        print(f"Tower built! /tp {hx} {hy + 5} {hz}")
+    else:
+        logger.error("Orchestrator returned empty buffer.")
 
 if __name__ == "__main__":
     main()

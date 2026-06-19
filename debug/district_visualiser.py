@@ -42,7 +42,6 @@ decoration     → pink
 from __future__ import annotations
 
 import logging
-import numpy as np
 
 from gdpc import Block
 from gdpc.editor import Editor
@@ -103,15 +102,12 @@ def visualise_districts(
     dmap      = districts.map          # (W, D) int32 — district index per cell
     n         = len(districts.district_list)
 
-    logger.info("=== District Visualiser ===")
-    logger.info("Districts: %d  |  Build area: x[%d,%d]  z[%d,%d]",
-                n, area.x_from, area.x_to, area.z_from, area.z_to)
+    logger.info("Districts=%d  area x[%d,%d] z[%d,%d]", n, area.x_from, area.x_to, area.z_from, area.z_to)
 
     # ------------------------------------------------------------------
     # 1. Region fill
     # ------------------------------------------------------------------
     if draw_region_fill:
-        logger.info("[1/3] Painting Voronoi regions...")
 
         W, D = dmap.shape
         for li in range(W):
@@ -122,13 +118,10 @@ def visualise_districts(
                 wy     = int(heightmap[li, lj]) + _FILL_Y_OFFSET
                 editor.placeBlock((wx, wy, wz), Block(f"minecraft:{_wool(dtype)}"))
 
-        logger.info("    ✓ Region fill complete.")
-
     # ------------------------------------------------------------------
     # 2. Centre pillars
     # ------------------------------------------------------------------
     if draw_centre_pillars:
-        logger.info("[2/3] Placing centre pillars...")
 
         for idx, district in enumerate(districts.district_list):
             cx = int(district.center_x)
@@ -157,13 +150,10 @@ def visualise_districts(
                 idx, dtype, cx, cy, cz, wool_id,
             )
 
-        logger.info("    ✓ Pillars placed.")
-
     # ------------------------------------------------------------------
     # 3. MST road preview (white wool centre-lines)
     # ------------------------------------------------------------------
     if draw_mst_preview:
-        logger.info("[3/3] Drawing MST road preview...")
 
         connection_points = [
             (d.center_x, d.center_z) for d in districts.district_list
@@ -182,14 +172,7 @@ def visualise_districts(
                 wy = int(heightmap[li, lj]) + _ROAD_Y_OFFSET
                 editor.placeBlock((wx, wy, wz), Block("minecraft:white_wool"))
 
-        logger.info("    ✓ MST preview drawn.")
-
-    # ------------------------------------------------------------------
-    # Flush
-    # ------------------------------------------------------------------
-    logger.info("Flushing visualiser blocks...")
     editor.flushBuffer()
-    logger.info("=== Visualiser done. ===")
 
 
 # ---------------------------------------------------------------------------

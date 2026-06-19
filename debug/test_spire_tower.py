@@ -1,46 +1,28 @@
 """
 test_spire_tower.py
 -------------------
-Standalone spire tower placement tester.
-
-Run from the project root while your Minecraft server is running:
-
-    python debug/test_spire_tower.py
-
-Builds a tall medieval spire tower with an attached house wing:
-  - Stone brick base (10 blocks) with door + windows
-  - Log transition belt
-  - Open belfry with fence arches
-  - Plank platform
-  - Steep dark-oak spire + lightning rod
-  - Attached house wing to the side
-
-Minimum plot: 10 wide × 6 deep.
-
-Controls
---------
-- PALETTE_NAME  — biome material set ("medieval", "desert", "snowy", "savanna")
-- OFFSET        — (x, y_offset, z) relative to player position
-- PLOT_WIDTH    — plot width (min 10)
-- PLOT_DEPTH    — plot depth (min 6)
-- ROTATION      — 0 / 90 / 180 / 270
-- CLEAR_FIRST   — wipe the area before building
-- SEED          — fixed int for reproducible results, None for random
+Updated tester for the compositional Spire Tower orchestrator.
+Uses player position and independent plot logic (no heightmap).
 """
 from __future__ import annotations
 
 import logging
 import sys
 import random
+import requests
+import re
 from pathlib import Path
 
+# Add project root to sys.path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from gdpc import Editor, Block
 
-from data.biome_palettes import get_biome_palette
+from palette.palette_system import get_biome_palette
 from data.settlement_entities import Plot
-from structures.misc.spire_tower import SpireTower
+from structures.base.build_context import BuildContext
+from structures.orchestrators.spire_tower import build_spire_tower
+from world_interface.block_buffer import BlockBuffer
 from world_interface.structure_placer import StructurePlacer
 
 logging.basicConfig(
@@ -53,25 +35,17 @@ logger = logging.getLogger("test_spire_tower")
 # =============================================================================
 # TWEAK ZONE
 # =============================================================================
-
 SEED: int | None = 42
-
-OFFSET: tuple[int, int, int] = (5, 0, 5)
-
-PLOT_WIDTH: int = 16   # min 10
-PLOT_DEPTH: int = 10   # min 6
-
+OFFSET: tuple[int, int, int] = (5, 0, 5)  # Relative to player (x, y_offset, z)
+PLOT_WIDTH: int = 16   # Tower (5) + House (min 5)
+PLOT_DEPTH: int = 10   
 PALETTE_NAME: str = "medieval"
-
 CLEAR_FIRST: bool = True
-
-ROTATION: int = 0   # 0 / 90 / 180 / 270
-
+ROTATION: int = 0   
 # =============================================================================
 
-
 def _get_player_pos(editor: Editor) -> tuple[int, int, int]:
-    import requests, re
+    """Tries multiple methods to find the player, falling back to build area center."""
     try:
         resp = requests.get("http://localhost:9000/players?includeData=true", timeout=3)
         if resp.ok:
@@ -108,8 +82,8 @@ def _get_player_pos(editor: Editor) -> tuple[int, int, int]:
     logger.warning("Falling back to build area centre.")
     return cx, 64, cz
 
-
 def clear_box(editor: Editor, x: int, y: int, z: int, w: int, d: int, h: int = 40) -> None:
+    """Wipes the build area to air before placement."""
     positions = [
         (x + dx, y + dy, z + dz)
         for dx in range(w + 4)
@@ -119,62 +93,47 @@ def clear_box(editor: Editor, x: int, y: int, z: int, w: int, d: int, h: int = 4
     logger.info("Clearing %d blocks...", len(positions))
     editor.placeBlock(positions, Block("minecraft:air"))
 
-
-def get_ground_y(editor: Editor, x: int, z: int, start_y: int) -> int:
-    for y in range(start_y, start_y - 30, -1):
-        block = editor.getBlock((x, y, z))
-        if block.id not in ("minecraft:air", "minecraft:cave_air", "minecraft:void_air"):
-            return y
-    return start_y
-
-
 def main() -> None:
     if SEED is not None:
         random.seed(SEED)
 
-    logger.info("Connecting to Minecraft server...")
+    logger.info("Connecting to Minecraft...")
     editor = Editor(buffering=True)
 
-    try:
-        editor.checkConnection()
-    except Exception as e:
-        logger.error("Could not connect: %s", e)
-        sys.exit(1)
-
-    logger.info("Connected.")
+    # 1. Coordinate Setup
     px, py, pz = _get_player_pos(editor)
-    logger.info("Player position: (%d, %d, %d)", px, py, pz)
-
     ox, oy_offset, oz = OFFSET
-    hx = px + ox
-    hz = pz + oz
-    hy = get_ground_y(editor, hx, hz, py + oy_offset)
-    logger.info("Plot origin: (%d, %d, %d)", hx, hy, hz)
+    hx, hy, hz = px + ox, py + oy_offset, pz + oz
 
+    logger.info("Plot origin (based on player): (%d, %d, %d)", hx, hy, hz)
+
+    # 2. Data Preparation
     plot = Plot(x=hx, y=hy, z=hz, width=PLOT_WIDTH, depth=PLOT_DEPTH, type="residential")
     palette = get_biome_palette(PALETTE_NAME)
 
     if CLEAR_FIRST:
         clear_box(editor, hx - 2, hy, hz - 2, PLOT_WIDTH, PLOT_DEPTH)
         editor.flushBuffer()
-        logger.info("Area cleared.")
 
-    logger.info(
-        "Building spire tower %dx%d at (%d,%d,%d) rotation=%d palette=%s ...",
-        PLOT_WIDTH, PLOT_DEPTH, hx, hy, hz, ROTATION, PALETTE_NAME,
+    # 3. Build using Context and Orchestrator
+    buffer = BlockBuffer()
+    # Building axis-aligned (0); post-rotation logic would happen after build()
+    ctx = BuildContext(
+        buffer=buffer, 
+        palette=palette,
     )
 
-    buf = SpireTower().build(plot, palette, rotation=ROTATION)
-    if not buf:
-        logger.error(
-            "SpireTower returned an empty buffer — check PLOT_WIDTH >= 10 and PLOT_DEPTH >= 6."
-        )
+    logger.info("Assembling Spire Tower (Tower + House Wing)...")
+    build_spire_tower(ctx, plot)
+
+    if not buffer:
+        logger.error("Build failed: Buffer is empty.")
         sys.exit(1)
 
-    logger.info("Buffer contains %d blocks.", len(buf))
-    StructurePlacer(editor).place(buf)
-    logger.info("Done — /tp %d %d %d", hx, hy + 5, hz - 5)
-
+    # 4. Final Placement
+    logger.info("Placing %d blocks via StructurePlacer...", len(buffer))
+    StructurePlacer(editor).place(buffer)
+    logger.info("Done — /tp %d %d %d", hx, hy + 5, hz)
 
 if __name__ == "__main__":
     main()

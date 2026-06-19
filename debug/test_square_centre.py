@@ -1,40 +1,28 @@
 """
-test_square_centre.py
----------------------
-Standalone plaza / square-centre placement tester.
-
-Run from the project root while your Minecraft server is running:
-
-    python debug/test_square_centre.py
-
-The fountain style is automatic:
-  - radius < 3   → simple rectangular paving
-  - radius 3–7   → small tiered fountain
-  - radius >= 8  → grand spire fountain
-
-Controls
---------
-- PALETTE_NAME  — biome material set (palette is optional for SquareCentre)
-- OFFSET        — (x, y_offset, z) relative to player position
-- PLOT_WIDTH    — plot width  (radius = min(w, d) // 2)
-- PLOT_DEPTH    — plot depth
-- CLEAR_FIRST   — wipe the area before building
-- SEED          — fixed int for reproducible results, None for random
+test_plaza.py
+-------------
+Standalone independent tester for the Circular Stone Plaza.
+Tests both Small Fountain and Grand Spire styles based on plot size.
 """
 from __future__ import annotations
 
 import logging
 import sys
 import random
+import requests
+import re
 from pathlib import Path
 
+# Ensure project root is in the path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from gdpc import Editor, Block
 
-from data.biome_palettes import get_biome_palette
+from palette.palette_system import get_biome_palette
 from data.settlement_entities import Plot
-from structures.misc.square_centre import SquareCentre
+from structures.base.build_context import BuildContext
+from structures.orchestrators.plaza import build_square_centre
+from world_interface.block_buffer import BlockBuffer
 from world_interface.structure_placer import StructurePlacer
 
 logging.basicConfig(
@@ -42,32 +30,26 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%H:%M:%S",
 )
-logger = logging.getLogger("test_square_centre")
+logger = logging.getLogger("test_plaza")
 
 # =============================================================================
-# TWEAK ZONE
+# CONFIGURATION
 # =============================================================================
-
 SEED: int | None = 42
+OFFSET: tuple[int, int, int] = (5, 0, 5) 
 
-OFFSET: tuple[int, int, int] = (5, 0, 5)
-
-# radius = min(PLOT_WIDTH, PLOT_DEPTH) // 2
-# radius >= 8  → grand spire fountain  (use 20×20 or larger)
-# radius 3–7   → small tiered fountain (use 8×8 to 16×16)
-# radius < 3   → simple paving         (use 4×4 or smaller)
-PLOT_WIDTH: int = 20
-PLOT_DEPTH: int = 20
+# Change these to test different styles:
+# Width/Depth < 16 (Radius < 8) -> Small Fountain
+# Width/Depth >= 16 (Radius >= 8) -> Grand Spire
+PLOT_WIDTH: int = 20   
+PLOT_DEPTH: int = 20   
 
 PALETTE_NAME: str = "medieval"
-
 CLEAR_FIRST: bool = True
-
 # =============================================================================
 
-
 def _get_player_pos(editor: Editor) -> tuple[int, int, int]:
-    import requests, re
+    """Retrieves player position via HTTP or Editor methods."""
     try:
         resp = requests.get("http://localhost:9000/players?includeData=true", timeout=3)
         if resp.ok:
@@ -90,91 +72,61 @@ def _get_player_pos(editor: Editor) -> tuple[int, int, int]:
     except Exception as e:
         logger.debug("editor.getPlayerPos() failed: %s", e)
 
-    try:
-        players = editor.getPlayers()
-        if players:
-            pos = players[0].pos
-            return int(pos.x), int(pos.y), int(pos.z)
-    except Exception as e:
-        logger.debug("editor.getPlayers() failed: %s", e)
-
     build_area = editor.getBuildArea()
-    cx = build_area.offset.x + build_area.size.x // 2
-    cz = build_area.offset.z + build_area.size.z // 2
-    logger.warning("Falling back to build area centre.")
-    return cx, 64, cz
-
+    return build_area.offset.x + build_area.size.x // 2, 64, build_area.offset.z + build_area.size.z // 2
 
 def clear_box(editor: Editor, x: int, y: int, z: int, w: int, d: int, h: int = 40) -> None:
+    """Clears volume to air."""
     positions = [
         (x + dx, y + dy, z + dz)
         for dx in range(w + 4)
         for dz in range(d + 4)
         for dy in range(-2, h)
     ]
-    logger.info("Clearing %d blocks...", len(positions))
     editor.placeBlock(positions, Block("minecraft:air"))
-
-
-def get_ground_y(editor: Editor, x: int, z: int, start_y: int) -> int:
-    for y in range(start_y, start_y - 30, -1):
-        block = editor.getBlock((x, y, z))
-        if block.id not in ("minecraft:air", "minecraft:cave_air", "minecraft:void_air"):
-            return y
-    return start_y
-
 
 def main() -> None:
     if SEED is not None:
         random.seed(SEED)
 
-    logger.info("Connecting to Minecraft server...")
+    logger.info("Initializing GDPC Editor...")
     editor = Editor(buffering=True)
 
-    try:
-        editor.checkConnection()
-    except Exception as e:
-        logger.error("Could not connect: %s", e)
-        sys.exit(1)
-
-    logger.info("Connected.")
+    # 1. Coordinate and Plot Setup
     px, py, pz = _get_player_pos(editor)
-    logger.info("Player position: (%d, %d, %d)", px, py, pz)
+    ox, oy, oz = OFFSET
+    hx, hy, hz = px + ox, py + oy, pz + oz
 
-    ox, oy_offset, oz = OFFSET
-    hx = px + ox
-    hz = pz + oz
-    hy = get_ground_y(editor, hx, hz, py + oy_offset)
-    logger.info("Plot origin: (%d, %d, %d)", hx, hy, hz)
+    logger.info(f"Target Plaza Center: ({hx + PLOT_WIDTH//2}, {hy}, {hz + PLOT_DEPTH//2})")
 
-    radius = min(PLOT_WIDTH, PLOT_DEPTH) // 2
-    style = ("grand spire" if radius >= 8
-              else "small fountain" if radius >= 3
-              else "simple paving")
-    logger.info("Fountain style: %s (radius=%d)", style, radius)
-
-    plot = Plot(x=hx, y=hy, z=hz, width=PLOT_WIDTH, depth=PLOT_DEPTH, type="residential")
+    plot = Plot(x=hx, y=hy, z=hz, width=PLOT_WIDTH, depth=PLOT_DEPTH, type="urban")
     palette = get_biome_palette(PALETTE_NAME)
 
+    # 2. Preparation
     if CLEAR_FIRST:
+        logger.info("Clearing build area...")
         clear_box(editor, hx - 2, hy, hz - 2, PLOT_WIDTH, PLOT_DEPTH)
         editor.flushBuffer()
-        logger.info("Area cleared.")
 
-    logger.info(
-        "Building square centre %dx%d at (%d,%d,%d) palette=%s ...",
-        PLOT_WIDTH, PLOT_DEPTH, hx, hy, hz, PALETTE_NAME,
+    # 3. Assemble the Structure
+    buffer = BlockBuffer()
+    ctx = BuildContext(
+        buffer=buffer, 
+        palette=palette,
     )
 
-    buf = SquareCentre().build(plot, palette)
-    if not buf:
-        logger.error("SquareCentre returned an empty buffer.")
+    logger.info(f"Orchestrating Plaza (Radius: {min(PLOT_WIDTH, PLOT_DEPTH)//2})...")
+    build_square_centre(ctx, plot)
+
+    if not buffer:
+        logger.error("Error: Plaza logic generated 0 blocks.")
         sys.exit(1)
 
-    logger.info("Buffer contains %d blocks.", len(buf))
-    StructurePlacer(editor).place(buf)
-    logger.info("Done — /tp %d %d %d", hx, hy + 5, hz - 5)
-
+    # 4. Placement
+    logger.info(f"Placing {len(buffer)} blocks...")
+    StructurePlacer(editor).place(buffer)
+    
+    logger.info(f"Done — /tp {hx + PLOT_WIDTH//2} {hy + 5} {hz + PLOT_DEPTH//2}")
 
 if __name__ == "__main__":
     main()

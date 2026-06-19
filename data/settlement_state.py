@@ -53,6 +53,8 @@ class OccupancyMap:
 
     def blocked(self, li: int, lj: int, w: int, d: int) -> bool:
         """True if any cell in the local-index rectangle is occupied."""
+        if li < 0 or lj < 0 or li + w > self._mask.shape[0] or lj + d > self._mask.shape[1]:
+            return True
         return bool(self._mask[li:li + w, lj:lj + d].any())
 
     def __contains__(self, cell: tuple[int, int]) -> bool:
@@ -99,11 +101,8 @@ class SettlementState:
     roads: set[RoadCell] = field(default_factory=set)
 
     # O(1) coordinate lookup — mirrors roads but strips type
-    _road_coords: set[tuple[int, int]] = field(default_factory=set)
-
+    _road_coords: dict[tuple[int, int], str] = field(default_factory=dict)
     # Universal occupancy — every module that places something writes here.
-    # Replaces the old `taken` set; also replaces PlotPlanner._taken_mask.
-    # Initialised lazily via init_occupancy() once best_area is known.
     occupancy: OccupancyMap | None = field(default=None)
 
     plots:     list[Plot]     = field(default_factory=list)
@@ -128,9 +127,10 @@ class SettlementState:
     def add_road_cells(self, cells: Iterable[RoadCell]) -> None:
         """Add road cells and register them in occupancy."""
         for cell in cells:
+            coord = (cell.x, cell.z)
             self.roads.add(cell)
-            self._road_coords.add((cell.x, cell.z))
-        self.occupancy.add((cell.x, cell.z) for cell in cells)
+            self._road_coords[coord] = cell.type
+            self.occupancy.add([coord])
 
     def add_plot(self, plot: Plot) -> None:
         """Append a validated plot and mark its footprint as occupied."""
@@ -150,11 +150,8 @@ class SettlementState:
         return (x, z) in self._road_coords
 
     def get_road_type(self, x: int, z: int) -> str | None:
-        """Return the road type at (x, z), or None. O(n)."""
-        for cell in self.roads:
-            if cell.x == x and cell.z == z:
-                return cell.type
-        return None
+        """Return the road type at (x, z), or None. O(1)."""
+        return self._road_coords.get((x, z))
 
     @property
     def is_placed(self) -> bool:

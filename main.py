@@ -8,6 +8,7 @@ from gdpc import Editor
 
 from generators import create_generator
 from utils.http_client import GDMCClient
+from world_interface.block_buffer import BlockBuffer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,6 +28,7 @@ def main() -> int:
 
     try:
         editor    = Editor(buffering=True)
+        # buffer = BlockBuffer()
         generator = create_generator(editor, client)
         state     = generator.generate()
 

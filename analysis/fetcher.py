@@ -203,20 +203,25 @@ class WorldFetcher:
         ignore_list = config.surface_ignore_blocks
         dx, dy, dz = grid.shape
 
-        valid = np.ones((dx, dy, dz), dtype=bool)
-        for key in ignore_list:
-            matches = np.frompyfunc(
-                lambda b: key in str(b), 1, 1
-            )(grid).astype(bool)
-            valid &= ~matches
+        def is_ignored(block_id: str) -> bool:
+            b_lower = str(block_id).lower()
+            return any(key in b_lower for key in ignore_list)
+        
+        v_is_ignored = np.vectorize(is_ignored)
+        valid = ~v_is_ignored(grid)
 
         valid_flipped = valid[:, ::-1, :]
         top_idx_flipped = np.argmax(valid_flipped, axis=1)
         has_valid = valid_flipped.any(axis=1)
-        top_idx = (dy - 1) - top_idx_flipped
+        
+        surface_y = np.where(
+            has_valid,
+            (dy - 1) - top_idx_flipped,
+            0
+        )
 
-        xs = np.arange(dx)[:, None]
-        zs = np.arange(dz)[None, :]
-        surface = grid[xs, top_idx, zs].copy()
-        surface[~has_valid] = "minecraft:air"
-        return surface
+        xs = np.arange(dx)
+        zs = np.arange(dz)
+
+        surface_ids = grid[xs[:, None], surface_y, zs]
+        return surface_ids

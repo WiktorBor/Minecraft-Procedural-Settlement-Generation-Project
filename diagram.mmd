@@ -1,26 +1,36 @@
 flowchart TD
     subgraph ENTRY["Entry Point"]
-        main["main.py 
-        main() 
-        plot_analysis()  
-        visualize_in_world()"]
+        main["main.py
+        main()
+        GDMCClient + Editor"]
+    end
+
+    subgraph GEN["generators/ — Composition & Orchestration"]
+        INIT["__init__.py
+        create_generator()
+        (composition root — wires deps)"]
+        SG["settlement_generator.py
+        SettlementGenerator
+        generate()
+        _generate_ring_road()
+        _build_connectors()"]
+        INIT --> SG
     end
 
     subgraph ANALYSIS["analysis/ — World Analysis"]
         WA["world_analysis.py
         WorldAnalyser
-        prepare()"]
+        prepare()
+        _cap_area()"]
         FE["fetcher.py
         WorldFetcher
         fetch_build_area()
         fetch_heightmaps()
-        fetch_biomes()"]
+        fetch_biomes()
+        fetch_surface_block_ids()"]
         AN["analyser.py
         TerrainAnalyser
-        compute_scores()
-        _compute_flatness()
-        _compute_slope()
-        _compute_water()"]
+        compute_scores()"]
         PS["patch_selector.py
         PatchSelector
         select_best_patch()"]
@@ -38,305 +48,246 @@ flowchart TD
         RoadCell"]
         SS["settlement_state.py
         SettlementState
-        add_taken()
-        add_road_cells()
-        add_plot()"]
+        OccupancyMap"]
         CFG["configurations.py
         SettlementConfig
         TerrainConfig
         DistrictRule"]
-        BP["biome_palettes.py
-        BiomePalette
-        get_biome_palette()
-        palette_get()"]
         BA["build_area.py
         BuildArea
         world_to_index()
         index_to_world()"]
-        MF["material_families.py
-        BIOMe_ID_MAP
-        BLOCK_VALUES
-        MATERIAL_FAMILIES"]
     end
 
     subgraph AI["ai/ — Decision Systems"]
         MDP["district_mdp.py
-        DistrictMDP
+        DistrictMDP (value iteration)
         thresholds_from_terrain()"]
     end
 
     subgraph PLANNING["planning/ — Settlement Planning"]
         SP["settlement_planner.py
         SettlementPlanner
-        plan()
         plan_districts()
         plan_roads()
         plan_plots()"]
         DP["settlement/district_planner.py
         DistrictPlanner
-        generate()
-        _assign_type()
-        _get_score_map()"]
-        RP["infrastructure/road_planner.py
-        RoadPlanner
         generate()"]
         PP["settlement/plot_planner.py
         PlotPlanner
-        generate()
-        _valid()"]
-        PM["palette_mapper.py
-        PaletteMapper
-        generate()
-        dominant_biome()
-        _generate_palettes()"]
+        generate()"]
+        RPL["infrastructure/road_planner.py
+        RoadPlanner
+        generate()"]
+        RPB["infrastructure/road_placer.py
+        RoadBuilder
+        build()"]
         SP --> DP
-        SP --> RP
         SP --> PP
+        SP --> RPL
+    end
+
+    subgraph PALETTE["palette/ — Materials"]
+        PSY["palette_system.py
+        PaletteSystem
+        generate()
+        create_palette()
+        get_road_material()"]
+        ML["material_library.py
+        MATERIAL_LIBRARY
+        (archetypes + districts)"]
+        PSY --> ML
     end
 
     subgraph UTILS["utils/ — Algorithms & Utilities"]
-        ASTAR["astar.py
-        find_path()"]
-        MST["mst.py
-        mst_edges()"]
-        PD["poisson_disk.py
-        poisson_disk()"]
+        ASTAR["astar.py — find_path()"]
+        MST["mst.py — mst_edges()"]
+        PD["poisson_disk.py"]
         PATH["path_utils.py
         expand_path_to_width()"]
         WALK["walkable_grid.py
         build_cost_grid()"]
-        GEO["geometry.py
-        center_distance()
-        areas_overlap()"]
+        GEO["geometry.py"]
         TU["terrain_utils.py
         get_area_slice()"]
-        HTTP["http_client.py
-        GDMCClient"]
+        HTTP["http_client.py — GDMCClient"]
         IFACE["interfaces.py
         TerrainLoaderProtocol"]
     end
 
-    subgraph GEN["generators/ — Orchestrator"]
-        SG["settlement_generator.py
-        SettlementGenerator
-        generate()
-        _generate_ring_road()
-        _recompute_terrain_maps()"]
-    end
+    subgraph STRUCTURES["structures/ — Building Generation"]
+        SEL["structure_selector.py
+        StructureSelector
+        select() · build()
+        DISTRICT_POOLS
+        effective_footprint()"]
+        BT["buffer_transform.py
+        rotate_buffer()
+        facing_to_rotation()"]
 
-    subgraph STRUCTURES["structures/ — Building Placement"]
         subgraph BASE["base/ — Abstractions"]
-            STR["structure.py
-            Structure (ABC)
-            build() abstract"]
-            AGENT["structure_agent.py
-            StructureAgent (ABC)
-            extract_patch()
-            compute_slope()
-            decide() 
-            abstract"]
-            SEL["structure_selector.py
-            StructureSelector
-            _QuickAgent
-            select()
-            build()
-            _pick_template()"]
-            REG["registry.py
-            STRUCTURES dict
-            get_structure()"]
             CTX["build_context.py
             BuildContext
-            place_light()
-            push()"]
-            PRIM["primitives.py
-            placeCuboid()
-            build_pyramid()"]
+            place() · place_light()"]
+            BGEO["geometry.py
+            fill_line() etc."]
         end
 
-        subgraph HOUSE["house/ — Procedural Houses"]
+        subgraph HOUSE["house/ — Procedural + ML"]
             H["house.py
-            House · HouseAgent"]
+            build_house_settlement()
+            (5-candidate scoring)"]
             HG["house_grammar.py
-            HouseGrammar
-            build()
-            build_at()"]
-            HB["house_body_builder.py
-            BodyBuilder"]
-            HD["house_detail_builder.py
-            DetailBuilder"]
-            HC["house_context.py
-            Ctx"]
-            HS["house_scorer.py
-            HouseParams
-            HouseScorer"]
+            rule_house()"]
+            HSC["house_scorer.py
+            HouseScorer · HouseParams
+            (Random Forest)"]
             HN["house_ngram_scorer.py
             HouseNgramScorer
             BlockSequenceRecorder"]
             H --> HG
-            HG --> HB
-            HG --> HD
-            HG --> HC
-            HG --> HS
-            HG --> HN
+            H --> HSC
+            H --> HN
         end
 
-        subgraph ROOFS["roofs/"]
-            RB["roof_builder.py
-            build_roof()"]
+        subgraph ORCH["orchestrators/ — Per-building"]
+            O_BK["blacksmith.py"]
+            O_DK["dock.py"]
+            O_FM["farm.py"]
+            O_MK["market.py"]
+            O_PZ["plaza.py"]
+            O_SP["spire_tower.py"]
+            O_TV["tavern.py"]
+            O_TW["tower.py"]
+            O_FT["fortification.py"]
         end
 
-        subgraph FARM["farm/"]
-            FB["farm_builder.py
-            FarmBuilder
-            build()"]
+        subgraph GRAMMAR["grammar/ — Shape rules"]
+            GR["*_grammar.py
+            blacksmith · dock · farm
+            tavern · tower · market
+            plaza · fortification
+            wall · roof · door · window
+            floor · ceiling · stairs
+            bridge · belfry · decoration"]
         end
 
-        subgraph TOWER["tower/"]
-            TW["tower.py
-            Tower
-            build()"]
-            TB["tower_builder.py
-            TowerBuilder
-            build_at()"]
-            TW --> TB
+        subgraph PRIM["orchestrators/primitives/ — Builders"]
+            PR["wall · roof · floor · door
+            window · ceiling · stairs
+            bridge · belfry · decoration"]
         end
 
-        subgraph MISC["misc/ — Specialty Buildings"]
-            BK["blacksmith.py
-            Blacksmith"]
-            MK["market_stall.py
-            MarketStall"]
-            CK["clock_tower.py
-            ClockTower"]
-            TV["tavern.py
-            Tavern"]
-            SP2["spire_tower.py
-            SpireTower"]
-            SQ["square_center.py
-            SquareCentre
-            build()"]
-            FORT["fortification_builder.py
-            FortificationBuilder"]
-        end
-
-        subgraph DECO["decoration/"]
-            subgraph DECOPLOT["plot/ — Per-plot"]
-                DEC["decoration.py
-                Decoration"]
-                DECB["decoration_builder.py
-                DecorationBuilder
-                build()
-                _build_well()
-                _build_fountain()"]
-                DEC --> DECB
-            end
-            subgraph DECODIST["district/ — Per-district"]
-                DM["district_marker.py
-                DistrictMarker
-                build()"]
-            end
+        subgraph DIST_STR["district_structures/"]
+            DM["district_marker.py
+            DistrictMarker
+            (fountains / wells / docks)"]
         end
 
         SEL --> H
-        SEL --> FB
-        SEL --> TW
-        SEL --> BK
-        SEL --> MK
-        SEL --> CK
-        SEL --> TV
-        SEL --> SP2
-        SEL --> DECB
-        REG --> H
-        HG --> RB
+        SEL --> ORCH
+        ORCH --> GRAMMAR
+        ORCH --> PRIM
+        GRAMMAR --> PRIM
+        SEL --> BT
     end
 
-    subgraph WORLD["world_interface/ — Minecraft Integration"]
+    subgraph WORLD["world_interface/ — Minecraft I/O"]
         TL["terrain_loader.py
         TerrainLoader
         get_build_area()
-        get_heightmap()
-        get_biomes()"]
-        RL["road_placer.py
-        RoadBuilder
-        build()"]
+        get_heightmap() · get_biomes()"]
+        BB["block_buffer.py
+        BlockBuffer
+        place() · merge()"]
+        SPL["structure_placer.py
+        StructurePlacer
+        place() (only Editor writer)"]
         TF["terraforming.py
-        terraform_area()
-        flatten_area()
-        fill_depression()"]
-        TC["terrain_clearer.py
-        clear_area()
-        remove_sparse_top()
-        seal_cave_openings()"]
+        terraform / level_plot_area
+        flatten / fill_depression"]
     end
 
-    %% Entry → subsystems
-    main --> WA
-    main --> SG
-    main --> TL
+    subgraph TRAIN["training/ — Offline ML (not in runtime path)"]
+        TR1["train_scorer.py
+        rescore + RandomForest"]
+        TR2["generate_training_data.py"]
+        TR3["eval_house_ngram.py"]
+        TR4["plot_feature_importance.py"]
+        MODELS["models/
+        house_scorer.pkl
+        house_ngram.pkl"]
+        TR1 --> MODELS
+        TR3 --> MODELS
+    end
 
-    %% Analysis outputs
-    WA --> AR
+    %% Entry wiring
+    main --> INIT
 
-    %% Analysis uses utils
-    FE --> IFACE
-    TU --> BA
-    WA --> TU
-
-    %% TL uses utils
-    TL --> HTTP
-    TL --> IFACE
+    %% Composition root wires the pipeline
+    INIT --> WA
+    INIT --> SP
+    INIT --> TL
+    INIT --> CFG
 
     %% Generator orchestrates everything
+    SG --> WA
     SG --> SP
-    SG --> PM
+    SG --> PSY
     SG --> SEL
     SG --> DM
-    SG --> FORT
-    SG --> SQ
-    SG --> RL
+    SG --> RPB
+    SG --> SPL
     SG --> TF
-    SG --> TC
+    SG --> CTX
+    SG --> O_PZ
+    SG --> O_FT
+    SG --> BB
 
-    %% Planning uses AI + utils
+    %% Analysis
+    WA --> AR
+    WA --> TU
+    FE --> IFACE
+    FE --> TL
+    AN --> CFG
+    PS --> CFG
+    TU --> BA
+
+    %% Planning internals
     DP --> MDP
     DP --> PD
-    RP --> ASTAR
-    RP --> MST
-    RP --> PATH
-    RP --> WALK
+    RPL --> ASTAR
+    RPL --> MST
+    RPL --> PATH
+    RPL --> WALK
     PP --> PD
+    SP --> CFG
+    RPB --> ASTAR
+    SG --> ASTAR
+    SG --> WALK
+    SG --> PATH
 
-    %% Palette uses data
-    PM --> MF
-    PM --> BP
+    %% Palette
+    PSY --> AR
+    PSY --> BE
 
-    %% Data flows into everything
-    AR --> WA
+    %% State / data flow
+    AR --> BA
     BE --> SS
-    CFG --> AN
-    CFG --> SP
-    CFG --> DP
-    CFG --> RP
-    CFG --> SEL
-    BP --> PM
-    BP --> DECB
-    BP --> FB
-    BP --> TW
-    BP --> TB
-    BP --> BK
-    BP --> MK
-    BP --> CK
-    BP --> TV
-    BP --> DECB
-    BA --> AR
+    SS --> BA
 
-    %% Structure base used by houses
-    STR --> H
-    AGENT --> H
-    CTX --> DECB
+    %% Structures use palette + context + buffer
+    PSY --> SEL
+    CTX --> PSY
+    CTX --> BB
+    H --> MODELS
+    SEL --> CTX
 
-    %% World interface uses data
+    %% World interface
+    TL --> HTTP
+    TL --> IFACE
     TL --> BA
-    RL --> AR
+    SPL --> BB
+    RPB --> BB
     TF --> AR
-    TC --> AR

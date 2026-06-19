@@ -1,69 +1,28 @@
 """
-test_market_stall.py
---------------------
-Standalone market stall placement tester.
-
-Run from the project root while your Minecraft server is running:
-
-    python debug/test_market_stall.py
-
-The canopy colour is chosen randomly each run (unless SEED is fixed).
-
-Controls
---------
-- PALETTE_NAME  — biome material set ("medieval", "desert", "snowy", "savanna")
-- OFFSET        — (x, y_offset, z) relative to player position
-- PLOT_WIDTH    — plot width (stall scales automatically)
-- PLOT_DEPTH    — plot depth
-- ROTATION      — 0 / 90 / 180 / 270
-- CLEAR_FIRST   — wipe the area before building
-- SEED          — fixed int for reproducible canopy colour, None for random
+test_market.py
+Independent tester: Places market stall at player position using multi-fallback method.
 """
 from __future__ import annotations
-
 import logging
 import sys
-import random
+import requests
+import re
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from gdpc import Editor, Block
-
-from data.biome_palettes import get_biome_palette
+from gdpc import Editor
+from palette.palette_system import get_biome_palette
 from data.settlement_entities import Plot
-from structures.misc.market_stall import MarketStall
+from structures.base.build_context import BuildContext
+from structures.orchestrators.market import build_market_stall
+from world_interface.block_buffer import BlockBuffer
 from world_interface.structure_placer import StructurePlacer
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger("test_market_stall")
-
-# =============================================================================
-# TWEAK ZONE
-# =============================================================================
-
-SEED: int | None = 42
-
-OFFSET: tuple[int, int, int] = (5, 0, 5)
-
-PLOT_WIDTH: int = 8   # stall canopy scales with plot size
-PLOT_DEPTH: int = 8
-
-PALETTE_NAME: str = "medieval"
-
-CLEAR_FIRST: bool = True
-
-ROTATION: int = 0   # 0 / 90 / 180 / 270
-
-# =============================================================================
-
+logger = logging.getLogger("test_market")
 
 def _get_player_pos(editor: Editor) -> tuple[int, int, int]:
-    import requests, re
+    """Robust method to find player coordinates via HTTP, Editor, or Build Area."""
     try:
         resp = requests.get("http://localhost:9000/players?includeData=true", timeout=3)
         if resp.ok:
@@ -100,71 +59,32 @@ def _get_player_pos(editor: Editor) -> tuple[int, int, int]:
     logger.warning("Falling back to build area centre.")
     return cx, 64, cz
 
-
-def clear_box(editor: Editor, x: int, y: int, z: int, w: int, d: int, h: int = 12) -> None:
-    positions = [
-        (x + dx, y + dy, z + dz)
-        for dx in range(w + 4)
-        for dz in range(d + 4)
-        for dy in range(-2, h)
-    ]
-    logger.info("Clearing %d blocks...", len(positions))
-    editor.placeBlock(positions, Block("minecraft:air"))
-
-
-def get_ground_y(editor: Editor, x: int, z: int, start_y: int) -> int:
-    for y in range(start_y, start_y - 30, -1):
-        block = editor.getBlock((x, y, z))
-        if block.id not in ("minecraft:air", "minecraft:cave_air", "minecraft:void_air"):
-            return y
-    return start_y
-
-
-def main() -> None:
-    if SEED is not None:
-        random.seed(SEED)
-
-    logger.info("Connecting to Minecraft server...")
+def main():
+    logging.basicConfig(level=logging.INFO)
     editor = Editor(buffering=True)
-
-    try:
-        editor.checkConnection()
-    except Exception as e:
-        logger.error("Could not connect: %s", e)
-        sys.exit(1)
-
-    logger.info("Connected.")
+    
+    # 1. Get position using your provided method
     px, py, pz = _get_player_pos(editor)
-    logger.info("Player position: (%d, %d, %d)", px, py, pz)
+    
+    # 2. Setup Plot at that exact location
+    plot = Plot(x=px, y=py, z=pz, width=7, depth=5, type="urban")
+    palette = get_biome_palette("medieval")
+    
+    # 3. Setup Context and Buffer
+    buffer = BlockBuffer()
+    ctx = BuildContext(buffer, palette)
 
-    ox, oy_offset, oz = OFFSET
-    hx = px + ox
-    hz = pz + oz
-    hy = get_ground_y(editor, hx, hz, py + oy_offset)
-    logger.info("Plot origin: (%d, %d, %d)", hx, hy, hz)
+    logger.info(f"Targeting Market Stall at: ({px}, {py}, {pz})")
+    
+    # 4. Build
+    build_market_stall(ctx, plot)
 
-    plot = Plot(x=hx, y=hy, z=hz, width=PLOT_WIDTH, depth=PLOT_DEPTH, type="residential")
-    palette = get_biome_palette(PALETTE_NAME)
-
-    if CLEAR_FIRST:
-        clear_box(editor, hx - 2, hy, hz - 2, PLOT_WIDTH, PLOT_DEPTH)
-        editor.flushBuffer()
-        logger.info("Area cleared.")
-
-    logger.info(
-        "Building market stall %dx%d at (%d,%d,%d) rotation=%d palette=%s ...",
-        PLOT_WIDTH, PLOT_DEPTH, hx, hy, hz, ROTATION, PALETTE_NAME,
-    )
-
-    buf = MarketStall().build(plot, palette, rotation=ROTATION)
-    if not buf:
-        logger.error("MarketStall returned an empty buffer.")
-        sys.exit(1)
-
-    logger.info("Buffer contains %d blocks.", len(buf))
-    StructurePlacer(editor).place(buf)
-    logger.info("Done — /tp %d %d %d", hx, hy + 5, hz - 5)
-
+    # 5. Place into world
+    if buffer:
+        StructurePlacer(editor).place(buffer)
+        logger.info("Market Stall built successfully.")
+    else:
+        logger.error("Build produced an empty buffer.")
 
 if __name__ == "__main__":
     main()
